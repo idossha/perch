@@ -125,6 +125,24 @@ pub struct PaneRecord {
     /// Last sound played, epoch millis, used for the per-pane cooldown.
     #[serde(default)]
     pub last_sound_ms: Option<i64>,
+    /// Subagents the harness reported for this pane (Claude `agent_id`, Codex SubagentStart).
+    /// They live in-process with the parent, so jumping to one lands on the parent pane.
+    #[serde(default)]
+    pub children: Vec<Subagent>,
+}
+
+/// One subagent under a pane. `id` is the harness's agent id; `agent_type` is its
+/// role label when the harness gives one (Claude `agent_type`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Subagent {
+    pub id: String,
+    #[serde(default)]
+    pub agent_type: Option<String>,
+    pub state: State,
+    /// RFC3339 timestamp of the last state change.
+    pub since: String,
+    #[serde(default)]
+    pub last_message: Option<String>,
 }
 
 impl PaneRecord {
@@ -142,6 +160,7 @@ impl PaneRecord {
             title: None,
             pid: None,
             last_sound_ms: None,
+            children: Vec::new(),
         }
     }
 }
