@@ -278,7 +278,8 @@ pub fn backup_path(path: &Path) -> PathBuf {
 pub const TMUX_SNIPPET: &str = "\
 # perch — managed by `perch install tmux`
 bind g display-popup -E -w 85% -h 75% 'perch tui'
-set -g status-right '#(perch status --format tmux) #{?client_prefix,^A ,}%H:%M'
+# Opt in to a status-line counter by prepending it to your theme's status-right, e.g.:
+#   set -ga status-right '#(perch status --format tmux) '
 ";
 
 /// Write `~/.config/perch/perch.tmux.conf` and report the source-file line.
