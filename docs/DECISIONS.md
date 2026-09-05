@@ -102,3 +102,50 @@ whose command string changed — that needs a manual edit or a future
 
 **Revisit if** the hook command string changes, which would need a migration
 step that rewrites rather than appends.
+
+## 6. `perch setup` detects and wires; the formula only tells you to run it — 2026-09-05
+
+**Decision.** One command, `perch setup`, detects which harnesses exist on the
+machine (config directory under `$HOME`, or the binary on `PATH`), runs each
+installer, wires tmux and reloads it, and writes
+`~/.config/perch/setup.json`. Homebrew cannot write to `$HOME`, so the formula
+does not attempt it: it prints a caveat asking for one `perch setup`.
+`install.sh` — which the user runs as themselves — does run setup, and
+`cargo install perch && perch setup` says it in the README. Detection takes a
+`Paths` struct resolved from `PERCH_HOME`, so the tests run against a temp home.
+
+**Why.** "Install the binary" and "modify the user's dotfiles" are different
+privileges and different moments. A package manager that edits `$HOME` breaks
+`brew uninstall`, surprises anyone installing for a shared machine, and cannot
+be undone by the manager. Making setup a single explicit command keeps the
+dotfile edit visible, idempotent and reversible, and gives every install path
+the same second step. A first-run nudge (a TUI banner, a stderr hint from
+`list`/`status`) closes the gap for the user who forgets.
+
+**Cost.** Brew users are one manual step from a working perch. The nudge costs
+a detection pass on every `list` and `status` until the marker exists.
+
+**Revisit if** Homebrew grows a sanctioned post-install user hook, or a harness
+gains a config location that neither `$HOME` nor `PATH` reveals.
+
+## 7. `uninstall` reverses only perch-owned entries — 2026-09-05
+
+**Decision.** `perch uninstall` removes hook groups whose command contains
+`perch hook` and nothing else. An event array left empty is deleted only when
+`setup.json` records that perch created it; the file is backed up before the
+rewrite; the pi extension, `perch.tmux.conf` and the `source-file` line — all
+entirely ours — are deleted outright.
+
+**Why.** The same reasoning as the merge-not-replace installers (decision 5),
+run backwards: these files belong to the user and hold other integrations. The
+marker is what makes the difference between "this array existed before perch"
+and "perch made it", which no amount of reading the current file can tell.
+Without a marker, uninstall falls back to removing arrays that end up empty,
+which is right for the common case and never touches a non-empty one.
+
+**Cost.** Uninstalling after deleting `setup.json` by hand may leave an empty
+array behind, or remove one the user had emptied themselves. Backups
+accumulate; they are timestamped, never overwritten, and never cleaned up.
+
+**Revisit if** the marker becomes unreliable — at which point uninstall should
+refuse to remove keys rather than guess.

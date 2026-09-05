@@ -13,9 +13,34 @@ phase 3.
 
 ## Install
 
+Three paths, each ending in one `perch setup` — the single command that
+detects which harnesses you actually have and wires all of them.
+
+**Homebrew**
+
 ```sh
-cargo install --path .
+brew install idossha/perch/perch
+perch setup
 ```
+
+**Cargo**
+
+```sh
+cargo install perch && perch setup
+```
+
+Cargo cannot run anything after an install, so setup is a separate word on the
+same line. `cargo binstall perch` fetches the same release tarball.
+
+**Script** (downloads the latest release into `~/.local/bin` and runs setup for
+you)
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/idossha/perch/main/install.sh | sh
+```
+
+`PERCH_VERSION=v0.2.0` pins a release, `PERCH_INSTALL_DIR` moves the target
+directory, and `--no-setup` installs the binary alone.
 
 macOS is the primary target: sounds use `afplay` and `/System/Library/Sounds`,
 and optional desktop notifications use `osascript`. Everything else works
@@ -23,31 +48,48 @@ anywhere tmux does.
 
 ## Setup
 
-**Claude Code** — merges a `perch hook claude` entry into the `SessionStart`,
-`UserPromptSubmit`, `Stop`, `Notification` and `SessionEnd` arrays of
-`~/.claude/settings.json`, appending beside whatever hooks you already have and
-backing the file up first:
+```sh
+perch setup [--dry-run] [--yes] [--no-tmux] [--only claude,codex,pi,tmux]
+```
+
+`setup` detects each harness (its config directory under `$HOME`, or its
+binary on `PATH`), runs that harness's installer, writes
+`~/.config/perch/perch.tmux.conf` with the `prefix + g` popup binding and adds
+one `source-file` line to `~/.tmux.conf`, and reloads tmux when you are inside
+it. Every merge is backup-first and append-only; a harness that is not
+installed is skipped with a note, and a second run reports `already`:
+
+```
+component  status              file                          backup
+claude     installed           ~/.claude/settings.json        ~/.claude/settings.json.bak-20260905...
+codex      installed           ~/.codex/hooks.json            ~/.codex/hooks.json.bak-20260905...
+pi         skipped: not found  -                              -
+tmux       installed           ~/.tmux.conf                   ~/.tmux.conf.bak-20260905...
+```
+
+A successful run leaves `~/.config/perch/setup.json` recording the version, the
+timestamp and what it touched — which is also what tells `uninstall` which hook
+arrays were perch's to remove. Until that file exists, the TUI shows a banner
+(`S` runs setup) and `list`/`status` print a one-line hint on stderr.
+
+**Check it.** `perch doctor` reports the binary, each harness (found? hooked?),
+the tmux binding and `source-file` line, the sound player, the state directory
+and the mute flag. It exits 1 when a harness you have is not wired, and
+`--json` prints the same as one object.
+
+**Remove it.** `perch uninstall [--dry-run] [--keep-state]` reverses every
+installer: it drops only the hook entries whose command contains `perch hook`
+(backing the file up first, leaving every other entry untouched), deletes the
+pi extension, removes the `source-file` line and `perch.tmux.conf`, and deletes
+the state directory unless you keep it.
+
+Individual installers remain available for one harness at a time:
 
 ```sh
 perch install claude --dry-run   # show what would change
 perch install claude
+perch install tmux --apply
 ```
-
-**tmux** — writes `~/.config/perch/perch.tmux.conf` (a `prefix + g` popup
-binding and a `status-right` counter). It never edits `~/.tmux.conf` in place
-beyond one line; by default it prints the line for you to add yourself:
-
-```sh
-perch install tmux
-# add this line to ~/.tmux.conf:
-source-file /Users/you/.config/perch/perch.tmux.conf
-```
-
-Pass `--apply` to have perch append that `source-file` line for you (backing up
-`~/.tmux.conf` first). Then `tmux source-file ~/.tmux.conf`.
-
-**Codex and pi** — `perch install codex` and `perch install pi` are recognised
-but currently exit with "codex and pi installers land in phase 3".
 
 ## Commands
 
@@ -59,6 +101,9 @@ perch next                            focus the oldest waiting pane
 perch tui                             the dashboard
 perch sound test <event>              play the sound for done | needs_input | error
 perch install <claude|codex|pi|tmux> [--dry-run] [--print] [--apply]
+perch setup [--dry-run] [--yes] [--no-tmux] [--only ...]
+perch doctor [--json]
+perch uninstall [--dry-run] [--keep-state]
 ```
 
 - `hook` reads one JSON object on stdin and always exits 0, so a broken perch
@@ -87,6 +132,7 @@ sorted needs_input, done, working, starting, idle, ended — oldest first.
 | `m` | toggle global mute |
 | `x` | dismiss a `done` pane back to `idle` |
 | `r` | refresh now |
+| `S` | run `perch setup` (shown as a banner until perch is wired) |
 | `q` / `Esc` | quit |
 
 The view refreshes from disk every second.

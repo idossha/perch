@@ -2,7 +2,18 @@
 name = "perch"
 version = "0.1.0"
 edition = "2021"
-description = "A thin, daemonless, tmux-native home base for coding agents"
+description = "tmux-native home base for coding agents"
+license = "MIT"
+repository = "https://github.com/idossha/perch"
+homepage = "https://github.com/idossha/perch"
+readme = "README.md"
+keywords = ["tmux", "tui", "agents", "claude", "hooks"]
+categories = ["command-line-utilities", "development-tools"]
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-{ target }.tar.gz"
+pkg-fmt = "tgz"
+bin-dir = "{ name }-v{ version }-{ target }/{ bin }{ binary-ext }"
 
 [[bin]]
 name = "perch"

@@ -1,0 +1,174 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package
+        shell: bash
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          name="perch-${tag}-${{ matrix.target }}"
+          mkdir "$name"
+          cp target/${{ matrix.target }}/release/perch "$name/"
+          cp LICENSE README.md "$name/"
+          tar czf "${name}.tar.gz" "$name"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: perch-${{ matrix.target }}
+          path: "*.tar.gz"
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          gh release create "$tag" \
+            --title "$tag" \
+            --generate-notes \
+            *.tar.gz
+
+  homebrew:
+    name: Update Homebrew Formula
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Compute SHA256 hashes
+        id: hashes
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          echo "sha_aarch64_mac=$(sha256sum perch-${tag}-aarch64-apple-darwin.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "sha_x86_64_mac=$(sha256sum perch-${tag}-x86_64-apple-darwin.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "sha_aarch64_linux=$(sha256sum perch-${tag}-aarch64-unknown-linux-gnu.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "sha_x86_64_linux=$(sha256sum perch-${tag}-x86_64-unknown-linux-gnu.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Generate formula and push to tap
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION="${{ steps.hashes.outputs.version }}"
+          SHA_AARCH64_MAC="${{ steps.hashes.outputs.sha_aarch64_mac }}"
+          SHA_X86_64_MAC="${{ steps.hashes.outputs.sha_x86_64_mac }}"
+          SHA_AARCH64_LINUX="${{ steps.hashes.outputs.sha_aarch64_linux }}"
+          SHA_X86_64_LINUX="${{ steps.hashes.outputs.sha_x86_64_linux }}"
+
+          cat > perch.rb << FORMULA
+          class Perch < Formula
+            desc "tmux-native home base for coding agents"
+            homepage "https://github.com/idossha/perch"
+            version "${VERSION}"
+            license "MIT"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/idossha/perch/releases/download/v#{version}/perch-v#{version}-aarch64-apple-darwin.tar.gz"
+                sha256 "${SHA_AARCH64_MAC}"
+              else
+                url "https://github.com/idossha/perch/releases/download/v#{version}/perch-v#{version}-x86_64-apple-darwin.tar.gz"
+                sha256 "${SHA_X86_64_MAC}"
+              end
+            end
+
+            on_linux do
+              if Hardware::CPU.arm?
+                url "https://github.com/idossha/perch/releases/download/v#{version}/perch-v#{version}-aarch64-unknown-linux-gnu.tar.gz"
+                sha256 "${SHA_AARCH64_LINUX}"
+              else
+                url "https://github.com/idossha/perch/releases/download/v#{version}/perch-v#{version}-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "${SHA_X86_64_LINUX}"
+              end
+            end
+
+            def install
+              bin.install "perch"
+            end
+
+            def caveats
+              <<~EOS
+                Homebrew cannot write to your home directory, so run this once to
+                wire perch into your harnesses and tmux:
+
+                  perch setup
+
+                Check it any time with `perch doctor`.
+              EOS
+            end
+
+            test do
+              assert_match "perch", shell_output("#{bin}/perch --version")
+            end
+          end
+          FORMULA
+
+          # Remove leading whitespace from heredoc
+          sed -i 's/^          //' perch.rb
+
+          # Clone tap, update formula, push
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/idossha/homebrew-perch.git" tap
+          cp perch.rb tap/Formula/perch.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/perch.rb
+          git commit -m "update perch to ${VERSION}"
+          git push

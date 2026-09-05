@@ -118,7 +118,11 @@ command can be neutered without config.
 | `PERCH_CONFIG_DIR` | config directory instead of `~/.config/perch` |
 | `PERCH_NO_SOUND=1` | never spawn `afplay` or `osascript` |
 | `PERCH_NO_TMUX=1` | use `NullTmux` (empty pane list, no tmux writes) |
+| `PERCH_HOME` | home directory detection and every default path resolve against |
+| `PERCH_NO_PATH_PROBE=1` | never probe `PATH` when detecting a harness |
 | `PERCH_CLAUDE_SETTINGS` | target file for `perch install claude` |
+| `PERCH_CODEX_HOOKS` | target file for `perch install codex` |
+| `PERCH_PI_EXT_DIR` | directory for `perch install pi` |
 | `PERCH_TMUX_CONF` | target file for the `source-file` line |
 
 CI runs the suite with `PERCH_NO_SOUND=1 PERCH_NO_TMUX=1`; tests that touch the
