@@ -54,9 +54,74 @@ pub fn run(harness: Harness) -> anyhow::Result<()> {
     }));
 
     if changed {
-        tmux::current().set_pane_option(&pane, "@perch_state", rec.state.as_str());
+        cue(&rec, &pane);
     }
     Ok(())
+}
+
+/// The instant cue for a parent transition: the pane's `@perch_state`, the
+/// window's `@perch_flag`, and a flash on every attached client.
+///
+/// All of it goes out as one `tmux a ; b ; c` invocation, spawned and not
+/// waited on, so the hook stays well inside its budget even with several
+/// clients attached.
+fn cue(rec: &PaneRecord, pane: &str) {
+    let t = tmux::current();
+    let mut cmds: Vec<Vec<String>> = vec![
+        opt("-p", pane, "@perch_state", rec.state.as_str()),
+        opt("-w", pane, "@perch_flag", flag_for(rec.state)),
+    ];
+
+    let cfg = config::load();
+    if cfg.notify.tmux_message {
+        if let Some(msg) = message_for(rec) {
+            let ms = cfg.notify.duration_ms.to_string();
+            for client in t.list_clients() {
+                cmds.push(vec![
+                    "display-message".into(),
+                    "-c".into(),
+                    client,
+                    "-d".into(),
+                    ms.clone(),
+                    msg.clone(),
+                ]);
+            }
+        }
+    }
+    t.batch(&cmds);
+}
+
+fn opt(scope: &str, pane: &str, name: &str, value: &str) -> Vec<String> {
+    vec![
+        "set-option".into(),
+        scope.into(),
+        "-t".into(),
+        pane.into(),
+        name.into(),
+        value.into(),
+    ]
+}
+
+/// The window-status marker for a state; every other state clears it.
+pub fn flag_for(state: crate::model::State) -> &'static str {
+    match state {
+        crate::model::State::NeedsInput => "⚑",
+        crate::model::State::Done => "✓",
+        _ => "",
+    }
+}
+
+/// The one-line flash, or `None` for a state that is not worth interrupting for.
+fn message_for(rec: &PaneRecord) -> Option<String> {
+    let project = rec.project.clone().unwrap_or_else(|| rec.pane.clone());
+    let harness = rec.harness.as_str();
+    match rec.state {
+        crate::model::State::NeedsInput => Some(format!(
+            "#[fg=red,bold]⚑ {project} ({harness}) needs input — prefix N jumps"
+        )),
+        crate::model::State::Done => Some(format!("#[fg=green]✓ {project} ({harness}) done")),
+        _ => None,
+    }
 }
 
 /// Debug aid: with `PERCH_DUMP_HOOK_INPUT=<dir>`, drop every raw payload as

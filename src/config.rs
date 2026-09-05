@@ -6,12 +6,63 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub struct Config {
     pub sounds: Sounds,
-    /// Post a desktop notification via `osascript` alongside the sound.
-    pub notify: bool,
+    /// How a transition is announced beyond the sound.
+    pub notify: Notify,
     /// Per-pane sound cooldown, seconds.
     pub cooldown_secs: i64,
     /// Commands shown as `unknown` panes (reserved; no scraping in v1).
     pub watch_commands: Vec<String>,
+}
+
+/// The instant cue on `done` / `needs_input`.
+#[derive(Debug, Clone, Serialize)]
+pub struct Notify {
+    /// Flash a one-line `tmux display-message` on every attached client.
+    pub tmux_message: bool,
+    /// How long that message stays up.
+    pub duration_ms: u64,
+    /// Also post a macOS notification via `osascript`.
+    pub desktop: bool,
+}
+
+impl Default for Notify {
+    fn default() -> Self {
+        Notify {
+            tmux_message: true,
+            duration_ms: 4000,
+            desktop: false,
+        }
+    }
+}
+
+/// Deserialised leniently: `notify = true`, the pre-`[notify]` spelling, still
+/// means "post a desktop notification", so an old config keeps working instead
+/// of failing to parse and losing every other setting with it.
+impl<'de> Deserialize<'de> for Notify {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize, Default)]
+        #[serde(default)]
+        struct Table {
+            tmux_message: Option<bool>,
+            duration_ms: Option<u64>,
+            desktop: Option<bool>,
+        }
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Desktop(bool),
+            Table(Table),
+        }
+        let base = Notify::default();
+        Ok(match Raw::deserialize(d)? {
+            Raw::Desktop(desktop) => Notify { desktop, ..base },
+            Raw::Table(t) => Notify {
+                tmux_message: t.tmux_message.unwrap_or(base.tmux_message),
+                duration_ms: t.duration_ms.unwrap_or(base.duration_ms),
+                desktop: t.desktop.unwrap_or(base.desktop),
+            },
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,7 +87,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             sounds: Sounds::default(),
-            notify: false,
+            notify: Notify::default(),
             cooldown_secs: 3,
             watch_commands: Vec::new(),
         }
@@ -88,6 +139,24 @@ mod tests {
         assert_eq!(c.sound_for("error"), Some("Basso"));
         assert_eq!(c.sound_for("nope"), None);
         assert_eq!(c.cooldown_secs, 3);
+    }
+
+    #[test]
+    fn notify_accepts_a_table_or_the_old_bool() {
+        let c: Config = toml::from_str("[notify]\ndesktop = true\n").unwrap();
+        assert!(c.notify.desktop);
+        assert!(c.notify.tmux_message);
+        assert_eq!(c.notify.duration_ms, 4000);
+
+        let c: Config = toml::from_str("notify = true\ncooldown_secs = 9\n").unwrap();
+        assert!(c.notify.desktop, "the old spelling still means desktop");
+        assert_eq!(c.cooldown_secs, 9, "and the rest of the file survives");
+
+        let c: Config =
+            toml::from_str("[notify]\ntmux_message = false\nduration_ms = 100\n").unwrap();
+        assert!(!c.notify.tmux_message);
+        assert_eq!(c.notify.duration_ms, 100);
+        assert!(!c.notify.desktop);
     }
 
     #[test]

@@ -96,6 +96,33 @@ so an old record still loads; an unparseable one is skipped rather than fatal.
 Config lives separately in `~/.config/perch/config.toml`
 (`PERCH_CONFIG_DIR`), next to the generated `perch.tmux.conf`.
 
+## The instant cue
+
+A sound says *something* happened; the cue says *what*, without opening the
+dashboard. On a parent transition the hook emits one tmux invocation carrying
+
+- `set-option -p @perch_state <state>` on the pane,
+- `set-option -w @perch_flag "⚑" | "✓" | ""` on its window — the snippet appends
+  `#{@perch_flag}` to `window-status-format` and `window-status-current-format`,
+  so a waiting window is visible from any other window, and
+- one `display-message -c <client> -d <ms>` per attached client
+  (`tmux list-clients -F '#{client_name}'`), red `⚑ <project> (<harness>) needs
+  input — prefix N jumps` or green `✓ <project> (<harness>) done`.
+
+The commands are batched with `;` into a single spawned `tmux` process that is
+never waited on, so the whole cue costs one fork regardless of how many clients
+are attached. `[notify]` in the config governs it: `tmux_message` (default
+true), `duration_ms` (4000) and `desktop` (false, an `osascript` notification on
+macOS). Subagent events are not parent transitions and never cue.
+
+`prefix + N` runs `perch next`, which moves the *calling* client:
+`switch-client -t <session of the pane>`, then `select-window` and
+`select-pane` by pane id, never by name.
+
+Under `PERCH_NO_TMUX=1`, `PERCH_TMUX_LOG=<file>` records each invocation as one
+line, which is how the cue is tested; `PERCH_FAKE_CLIENTS` stands in for the
+client list.
+
 ## Codex hook trust
 
 Codex runs a hook only if `~/.codex/config.toml` records it as trusted; without
@@ -174,6 +201,8 @@ command can be neutered without config.
 | `PERCH_CONFIG_DIR` | config directory instead of `~/.config/perch` |
 | `PERCH_NO_SOUND=1` | never spawn `afplay` or `osascript` |
 | `PERCH_NO_TMUX=1` | use `NullTmux` (empty pane list, no tmux writes) |
+| `PERCH_TMUX_LOG` | with `PERCH_NO_TMUX`, record each tmux invocation to a file |
+| `PERCH_FAKE_CLIENTS` | with `PERCH_NO_TMUX`, the client list the cue uses |
 | `PERCH_HOME` | home directory detection and every default path resolve against |
 | `PERCH_NO_PATH_PROBE=1` | never probe `PATH` when detecting a harness |
 | `PERCH_CLAUDE_SETTINGS` | target file for `perch install claude` |

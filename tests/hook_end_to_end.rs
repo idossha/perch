@@ -74,6 +74,108 @@ fn a_prompt_then_stop_leaves_a_done_record() {
     assert!(events.contains("\"event\":\"stop\""));
 }
 
+/// The instant cue: one tmux invocation carrying the pane state, the window
+/// flag and one flash per attached client.
+#[test]
+fn a_parent_transition_flashes_every_client_and_sets_the_window_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path();
+    let log = p.join("tmux.log");
+
+    let hook = |body: &str| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_perch"));
+        cmd.args(["hook", "claude"])
+            .env("PERCH_STATE_DIR", p)
+            .env("PERCH_CONFIG_DIR", p.join("config"))
+            .env("PERCH_NO_SOUND", "1")
+            .env("PERCH_NO_TMUX", "1")
+            .env("PERCH_TMUX_LOG", &log)
+            .env("PERCH_FAKE_CLIENTS", "/dev/ttys001,/dev/ttys002")
+            .env("TMUX_PANE", "%999")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut child = cmd.spawn().unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(body.as_bytes())
+            .unwrap();
+        assert!(child.wait().unwrap().success());
+    };
+
+    hook(&fixture("notification_permission_prompt.json"));
+    let lines: Vec<String> = std::fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .map(|l| l.to_string())
+        .collect();
+    assert_eq!(lines.len(), 1, "one invocation per transition: {lines:?}");
+    let line = &lines[0];
+    assert!(
+        line.contains("set-option -p -t %999 @perch_state needs_input"),
+        "{line}"
+    );
+    assert!(
+        line.contains("set-option -w -t %999 @perch_flag ⚑"),
+        "{line}"
+    );
+    assert!(
+        line.contains("display-message -c /dev/ttys001 -d 4000"),
+        "{line}"
+    );
+    assert!(
+        line.contains("display-message -c /dev/ttys002 -d 4000"),
+        "{line}"
+    );
+    assert!(line.contains("needs input — prefix N jumps"), "{line}");
+
+    // A subagent event is not a parent transition: no cue at all.
+    hook(&fixture("subagent_start.json"));
+    assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 1);
+
+    // Working clears the flag and says nothing.
+    hook(&fixture("user_prompt_submit.json"));
+    let last = std::fs::read_to_string(&log).unwrap();
+    let last = last.lines().last().unwrap().to_string();
+    assert!(last.contains("@perch_flag "), "{last}");
+    assert!(!last.contains("display-message"), "{last}");
+}
+
+/// `[notify] tmux_message = false` keeps the options and drops the flash.
+#[test]
+fn the_flash_can_be_turned_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path();
+    let cfg = p.join("config");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::write(cfg.join("config.toml"), "[notify]\ntmux_message = false\n").unwrap();
+    let log = p.join("tmux.log");
+
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_perch"));
+    cmd.args(["hook", "claude"])
+        .env("PERCH_STATE_DIR", p)
+        .env("PERCH_CONFIG_DIR", &cfg)
+        .env("PERCH_NO_SOUND", "1")
+        .env("PERCH_NO_TMUX", "1")
+        .env("PERCH_TMUX_LOG", &log)
+        .env("PERCH_FAKE_CLIENTS", "/dev/ttys001")
+        .env("TMUX_PANE", "%999")
+        .stdin(Stdio::piped());
+    let mut child = cmd.spawn().unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(fixture("notification_permission_prompt.json").as_bytes())
+        .unwrap();
+    assert!(child.wait().unwrap().success());
+    let line = std::fs::read_to_string(&log).unwrap();
+    assert!(line.contains("@perch_flag ⚑"), "{line}");
+    assert!(!line.contains("display-message"), "{line}");
+}
+
 /// Subagent events land under the parent pane's record, never as panes of
 /// their own, and `list --json` carries them.
 #[test]

@@ -293,6 +293,16 @@ fn cmd_next() -> anyhow::Result<()> {
         return Ok(());
     };
     println!("{}", target.pane);
-    t.focus(&target.pane);
+    // The pane may live in another session, so move the client there first,
+    // then select by pane id — never by window or session name.
+    match t
+        .list_panes()
+        .into_iter()
+        .find(|p| p.pane == target.pane)
+        .map(|p| p.session)
+    {
+        Some(session) => t.jump(&session, &target.pane),
+        None => t.focus(&target.pane),
+    }
     Ok(())
 }

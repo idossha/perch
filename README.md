@@ -54,7 +54,9 @@ perch setup [--dry-run] [--yes] [--no-tmux] [--only claude,codex,pi,tmux]
 
 `setup` detects each harness (its config directory under `$HOME`, or its
 binary on `PATH`), runs that harness's installer, writes
-`~/.config/perch/perch.tmux.conf` with the `prefix + g` popup binding and adds
+`~/.config/perch/perch.tmux.conf` with the `prefix + g` popup binding, the
+`prefix + N` binding for `perch next`, and the `#{@perch_flag}` window-status
+marker (`⚑` waiting on you, `✓` finished), and adds
 one `source-file` line to `~/.tmux.conf`, and reloads tmux when you are inside
 it. Every merge is backup-first and append-only; a harness that is not
 installed is skipped with a note, and a second run reports `already`:
@@ -203,6 +205,11 @@ in the environment disables sound for that process. Then try
 **A pane shows `ended`.** Its tmux pane no longer exists — the shell exited or
 the pane was killed. That is the liveness rule, not a bug; the row disappears
 an hour later, or immediately after `tmux kill-pane` plus a refresh.
+
+**No flash, no window flag.** The cue needs the current snippet: re-run
+`perch setup` (or `perch install tmux --apply`) and reload tmux. Turn it off
+with `[notify] tmux_message = false`; `duration_ms` sets how long it stays up,
+and `desktop = true` adds a macOS notification.
 
 **A subagent is missing.** Subagents show as indented rows under their pane,
 and only while the harness reports them: they are cleared by your next prompt

@@ -58,6 +58,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   prompt first. `perch doctor` reports `trust: yes/no`, `perch uninstall`
   removes only those keys, and the rest of the file keeps its formatting.
   Re-run `perch setup` after reordering `~/.codex/hooks.json`.
+- Instant cue on `done` / `needs_input`: a one-line `tmux display-message` on
+  every attached client, and a per-window `@perch_flag` (`⚑` / `✓`) that the
+  tmux snippet appends to the window status. The snippet also binds
+  `prefix + N` to `perch next`, which now switches session before selecting the
+  pane, so it works across sessions. Configured under `[notify]`:
+  `tmux_message` (default true), `duration_ms` (4000), `desktop` (false).
+  Everything is batched into one spawned tmux call.
+- `[notify]` replaces the old top-level `notify = true`, which is still read and
+  understood as `[notify] desktop = true`.
 - Subagents: `SubagentStart` / `SubagentStop` (and `Stop` / `Notification`
   carrying an `agent_id`) from Claude and Codex now appear as `children` of
   their parent pane in `perch list --json` and in the TUI, instead of being

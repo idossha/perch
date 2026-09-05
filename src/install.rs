@@ -327,6 +327,10 @@ pub fn backup_path(path: &Path) -> PathBuf {
 pub const TMUX_SNIPPET: &str = "\
 # perch — managed by `perch install tmux`
 bind g display-popup -E -w 85% -h 75% 'perch tui'
+bind N run-shell 'perch next'
+# Per-window flag: ⚑ waiting on you, ✓ finished. Empty the rest of the time.
+set -ga window-status-format ' #{@perch_flag}'
+set -ga window-status-current-format ' #{@perch_flag}'
 # Opt in to a status-line counter by prepending it to your theme's status-right, e.g.:
 #   set -ga status-right '#(perch status --format tmux) '
 ";
@@ -449,5 +453,8 @@ mod tests {
     #[test]
     fn tmux_snippet_has_the_popup_binding() {
         assert!(TMUX_SNIPPET.contains("bind g display-popup -E -w 85% -h 75% 'perch tui'"));
+        assert!(TMUX_SNIPPET.contains("bind N run-shell 'perch next'"));
+        assert!(TMUX_SNIPPET.contains("window-status-format ' #{@perch_flag}'"));
+        assert!(TMUX_SNIPPET.contains("window-status-current-format ' #{@perch_flag}'"));
     }
 }

@@ -65,7 +65,7 @@ pub fn play(cfg: &Config, event: &str) {
 
 /// Optional desktop notification, best-effort.
 pub fn notify(cfg: &Config, title: &str, body: &str) {
-    if !cfg.notify || !enabled() {
+    if !cfg.notify.desktop || !enabled() {
         return;
     }
     let script = format!(
