@@ -55,8 +55,7 @@ perch setup [--dry-run] [--yes] [--no-tmux] [--only claude,codex,pi,tmux]
 `setup` detects each harness (its config directory under `$HOME`, or its
 binary on `PATH`), runs that harness's installer, writes
 `~/.config/perch/perch.tmux.conf` with the `prefix + g` popup binding, the
-`prefix + N` binding for `perch next`, and the `#{@perch_flag}` window-status
-marker (`⚑` waiting on you, `✓` finished), and adds
+`prefix + N` binding for `perch next` and the seen-tracking hooks, and adds
 one `source-file` line to `~/.tmux.conf`, and reloads tmux when you are inside
 it. Every merge is backup-first and append-only; a harness that is not
 installed is skipped with a note, and a second run reports `already`:
@@ -110,6 +109,7 @@ perch status [--format plain|tmux]    one-line summary for the status bar
 perch next                            focus the oldest waiting pane
 perch tui                             the dashboard
 perch sound test <event>              play the sound for done | needs_input | error
+perch toast <kind> [text...]          draw a toast; `perch toast test` shows a sample
 perch seen <pane>                     mark a pane seen: done -> idle
 perch install <claude|codex|pi|tmux> [--dry-run] [--print] [--apply]
 perch setup [--dry-run] [--yes] [--no-tmux] [--only ...]
@@ -125,6 +125,12 @@ perch uninstall [--dry-run] [--keep-state]
   `--format tmux` adds tmux colour escapes for `status-right`.
 - `next` prints the pane id of the oldest `needs_input`/`done` pane and moves
   the current client to it, or prints `nothing waiting`.
+- `toast` draws one borderless one-line popup in the bottom-right corner of
+  every attached client — green `✓` for `done`, red `⚑` for `needs_input`. It
+  fades out over its last 600 ms and disappears; the first key you press
+  dismisses it *and* is passed through to the pane you were typing at, so it
+  can never eat a character. The hook draws one for you on every transition
+  into `done` or `needs_input`; `perch toast test` shows a sample.
 - `install --dry-run` reports without writing; `--print` writes nothing and
   dumps the merged settings JSON (claude) or the config snippet (tmux) to
   stdout; `--apply` is tmux-only and appends the `source-file` line.
@@ -164,7 +170,6 @@ a light terminal.
 files fall back to these defaults.
 
 ```toml
-notify = false        # also post an osascript desktop notification
 cooldown_secs = 3     # per-pane minimum gap between sounds
 watch_commands = []   # reserved; perch does not scrape pane text
 
@@ -172,6 +177,15 @@ watch_commands = []   # reserved; perch does not scrape pane text
 done = "Glass"
 needs_input = "Ping"
 error = "Basso"
+
+[notify]
+desktop = false       # also post an osascript desktop notification
+
+[toast]
+enabled = true
+duration_ms = 3000
+done_style = "bg=colour28,fg=colour255,bold"
+needs_input_style = "bg=colour160,fg=colour255,bold"
 ```
 
 A bare name resolves to `/System/Library/Sounds/<name>.aiff`; a value
@@ -207,10 +221,11 @@ in the environment disables sound for that process. Then try
 the pane was killed. That is the liveness rule, not a bug; the row disappears
 an hour later, or immediately after `tmux kill-pane` plus a refresh.
 
-**No flash, no window flag.** The cue needs the current snippet: re-run
-`perch setup` (or `perch install tmux --apply`) and reload tmux. Turn it off
-with `[notify] tmux_message = false`; `duration_ms` sets how long it stays up,
-and `desktop = true` adds a macOS notification.
+**No toast.** Run `perch toast test` — it draws a sample in the bottom-right
+corner of every attached client, so you can check placement without waiting
+for an agent. It needs tmux 3.2 or newer (`display-popup`). Turn toasts off
+with `[toast] enabled = false`, restyle them with `done_style` /
+`needs_input_style`, and add a macOS banner with `[notify] desktop = true`.
 
 **A pane says `needs_input` but nothing is waiting.** That should no longer
 happen: `needs_input` now means only a real approval or question dialog

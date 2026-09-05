@@ -58,13 +58,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   prompt first. `perch doctor` reports `trust: yes/no`, `perch uninstall`
   removes only those keys, and the rest of the file keeps its formatting.
   Re-run `perch setup` after reordering `~/.codex/hooks.json`.
-- Instant cue on `done` / `needs_input`: a one-line `tmux display-message` on
-  every attached client, and a per-window `@perch_flag` (`⚑` / `✓`) that the
-  tmux snippet appends to the window status. The snippet also binds
-  `prefix + N` to `perch next`, which now switches session before selecting the
-  pane, so it works across sessions. Configured under `[notify]`:
-  `tmux_message` (default true), `duration_ms` (4000), `desktop` (false).
-  Everything is batched into one spawned tmux call.
+- Instant cue on `done` / `needs_input`: a toast in the bottom-right corner of
+  every attached client (see *Changed* below) plus a `@perch_state` pane
+  option. The tmux snippet also binds `prefix + N` to `perch next`, which
+  switches session before selecting the pane, so it works across sessions.
 - `[notify]` replaces the old top-level `notify = true`, which is still read and
   understood as `[notify] desktop = true`.
 - Subagents: `SubagentStart` / `SubagentStop` (and `Stop` / `Notification`
@@ -80,6 +77,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `session_id`/`thread_id`/`turn_id` and
   `last_assistant_message`/`last_message`.
 - MIT LICENSE.
+
+### Changed
+
+- The `done` / `needs_input` cue is a toast: a borderless one-line popup in
+  the bottom-right corner of every attached client, green `✓` or red `⚑`, that
+  fades out over its last 600 ms. The first key you press dismisses it *and* is
+  passed through to the pane you were typing at, so it can never eat a
+  character. `perch toast test` draws a sample. Configured under `[toast]`:
+  `enabled` (true), `duration_ms` (3000), `done_style`, `needs_input_style`.
+- perch no longer writes into your window list or your status line: the
+  `#{@perch_flag}` window-status marker and the per-client `display-message`
+  flash are gone, with the `[notify] tmux_message` and `duration_ms` keys that
+  governed them. `[notify] desktop` is unchanged. Re-run `perch setup` (or
+  `perch install tmux --apply`) to drop the `window-status-format` lines from
+  an earlier install.
 
 ### Fixed
 

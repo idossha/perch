@@ -104,21 +104,38 @@ Config lives separately in `~/.config/perch/config.toml`
 ## The instant cue
 
 A sound says *something* happened; the cue says *what*, without opening the
-dashboard. On a parent transition the hook emits one tmux invocation carrying
+dashboard. On a parent transition the hook
 
-- `set-option -p @perch_state <state>` on the pane,
-- `set-option -w @perch_flag "⚑" | "✓" | ""` on its window — the snippet appends
-  `#{@perch_flag}` to `window-status-format` and `window-status-current-format`,
-  so a waiting window is visible from any other window, and
-- one `display-message -c <client> -d <ms>` per attached client
-  (`tmux list-clients -F '#{client_name}'`), red `⚑ <project> (<harness>) needs
-  input — prefix N jumps` or green `✓ <project> (<harness>) done`.
+- writes `set-option -p @perch_state <state>` on the pane, spawned and not
+  waited on, and
+- spawns a detached `perch toast <kind> "<project> (<harness>) <what>"`
+  (`std::env::current_exe()`), which never blocks the hook.
 
-The commands are batched with `;` into a single spawned `tmux` process that is
-never waited on, so the whole cue costs one fork regardless of how many clients
-are attached. `[notify]` in the config governs it: `tmux_message` (default
-true), `duration_ms` (4000) and `desktop` (false, an `osascript` notification on
-macOS). Subagent events are not parent transitions and never cue.
+`perch toast` draws one popup per attached client
+(`list-clients -F '#{client_name}'`):
+
+```
+tmux display-popup -c <client> -B -E -x R -y P -w <width> -h 1 -s <style> \
+  -- perch toast-body <kind> <duration_ms> <text> --client <client>
+```
+
+`-B` drops the border and `-x R -y P` pins the box to the bottom-right corner
+of *that* client; the width is the text's unicode display width plus four,
+capped at 60 columns, and a longer message is ellipsized. A second popup on a
+client that already has one replaces it.
+
+`perch toast-body` prints `  <glyph> <text>  `, puts the tty in raw mode and
+waits out `duration_ms`. Two `tmux display-popup -s <dimmer style>` calls from
+*inside* the popup restyle it in place over the last 600 ms — that is the fade.
+If a key arrives first the toast exits immediately and the bytes are forwarded
+verbatim with `send-keys -t <the client's active pane> -l -- <bytes>`, so the
+keystroke that dismissed the toast still reaches the agent.
+
+`[toast]` in the config governs it: `enabled` (default true), `duration_ms`
+(3000), `done_style` and `needs_input_style`. `[notify] desktop` (false) adds
+an `osascript` banner on macOS. Subagent events are not parent transitions and
+never cue. Nothing is written to the window list: perch owns a corner of the
+screen for three seconds and nothing else.
 
 `prefix + N` runs `perch next` and `Enter` in the dashboard runs the same
 `tui::jump_to`, which moves the *calling* client: `switch-client -t <session of

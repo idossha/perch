@@ -8,6 +8,8 @@ pub struct Config {
     pub sounds: Sounds,
     /// How a transition is announced beyond the sound.
     pub notify: Notify,
+    /// The bottom-right toast.
+    pub toast: Toast,
     /// Per-pane sound cooldown, seconds.
     pub cooldown_secs: i64,
     /// Commands shown as `unknown` panes (reserved; no scraping in v1).
@@ -15,22 +17,31 @@ pub struct Config {
 }
 
 /// The instant cue on `done` / `needs_input`.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct Notify {
-    /// Flash a one-line `tmux display-message` on every attached client.
-    pub tmux_message: bool,
-    /// How long that message stays up.
-    pub duration_ms: u64,
-    /// Also post a macOS notification via `osascript`.
+    /// Post a macOS notification via `osascript`.
     pub desktop: bool,
 }
 
-impl Default for Notify {
+/// The bottom-right toast drawn on every attached client.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Toast {
+    pub enabled: bool,
+    /// How long it stays up, fade included.
+    pub duration_ms: u64,
+    /// `tmux display-popup -s` style for each kind.
+    pub done_style: String,
+    pub needs_input_style: String,
+}
+
+impl Default for Toast {
     fn default() -> Self {
-        Notify {
-            tmux_message: true,
-            duration_ms: 4000,
-            desktop: false,
+        Toast {
+            enabled: true,
+            duration_ms: 3000,
+            done_style: "bg=colour28,fg=colour255,bold".into(),
+            needs_input_style: "bg=colour160,fg=colour255,bold".into(),
         }
     }
 }
@@ -43,8 +54,6 @@ impl<'de> Deserialize<'de> for Notify {
         #[derive(Deserialize, Default)]
         #[serde(default)]
         struct Table {
-            tmux_message: Option<bool>,
-            duration_ms: Option<u64>,
             desktop: Option<bool>,
         }
         #[derive(Deserialize)]
@@ -55,10 +64,8 @@ impl<'de> Deserialize<'de> for Notify {
         }
         let base = Notify::default();
         Ok(match Raw::deserialize(d)? {
-            Raw::Desktop(desktop) => Notify { desktop, ..base },
+            Raw::Desktop(desktop) => Notify { desktop },
             Raw::Table(t) => Notify {
-                tmux_message: t.tmux_message.unwrap_or(base.tmux_message),
-                duration_ms: t.duration_ms.unwrap_or(base.duration_ms),
                 desktop: t.desktop.unwrap_or(base.desktop),
             },
         })
@@ -88,6 +95,7 @@ impl Default for Config {
         Config {
             sounds: Sounds::default(),
             notify: Notify::default(),
+            toast: Toast::default(),
             cooldown_secs: 3,
             watch_commands: Vec::new(),
         }
@@ -145,18 +153,31 @@ mod tests {
     fn notify_accepts_a_table_or_the_old_bool() {
         let c: Config = toml::from_str("[notify]\ndesktop = true\n").unwrap();
         assert!(c.notify.desktop);
-        assert!(c.notify.tmux_message);
-        assert_eq!(c.notify.duration_ms, 4000);
 
         let c: Config = toml::from_str("notify = true\ncooldown_secs = 9\n").unwrap();
         assert!(c.notify.desktop, "the old spelling still means desktop");
         assert_eq!(c.cooldown_secs, 9, "and the rest of the file survives");
 
-        let c: Config =
-            toml::from_str("[notify]\ntmux_message = false\nduration_ms = 100\n").unwrap();
-        assert!(!c.notify.tmux_message);
-        assert_eq!(c.notify.duration_ms, 100);
+        // The retired `[notify] tmux_message` / `duration_ms` keys are simply
+        // ignored, rather than failing the parse and losing the whole file.
+        let c: Config = toml::from_str(
+            "[notify]\ntmux_message = false\nduration_ms = 100\n[sounds]\ndone = \"Hero\"\n",
+        )
+        .unwrap();
         assert!(!c.notify.desktop);
+        assert_eq!(c.sounds.done, "Hero");
+    }
+
+    #[test]
+    fn toast_defaults_and_overrides() {
+        let c = Config::default();
+        assert!(c.toast.enabled);
+        assert_eq!(c.toast.duration_ms, 3000);
+        assert_eq!(c.toast.done_style, "bg=colour28,fg=colour255,bold");
+
+        let c: Config = toml::from_str("[toast]\nneeds_input_style = \"bg=blue\"\n").unwrap();
+        assert_eq!(c.toast.needs_input_style, "bg=blue");
+        assert_eq!(c.toast.duration_ms, 3000);
     }
 
     #[test]

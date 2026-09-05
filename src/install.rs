@@ -330,11 +330,7 @@ pub const TMUX_SNIPPET: &str = "\
 # perch — managed by `perch install tmux`
 bind g display-popup -E -w 85% -h 75% 'perch tui'
 bind N run-shell 'perch next'
-# Per-window flag: ⚑ waiting on you, ✓ finished. Empty the rest of the time.
-# Guarded so re-sourcing this file never appends a second copy.
-if -F '#{m:*@perch_flag*,#{window-status-format}}' '' \"set -ga window-status-format ' #{@perch_flag}'\"
-if -F '#{m:*@perch_flag*,#{window-status-current-format}}' '' \"set -ga window-status-current-format ' #{@perch_flag}'\"
-# Looking at a finished pane marks it seen: done -> idle, flag cleared.
+# Looking at a finished pane marks it seen: done -> idle.
 # Indexed slots so your own hooks in these events are left alone.
 # (`pane-focus-in` never fires on tmux 3.6 here, so window/pane/session
 # switches are what count as \"looking at it\".)
@@ -464,12 +460,11 @@ mod tests {
     fn tmux_snippet_has_the_popup_binding() {
         assert!(TMUX_SNIPPET.contains("bind g display-popup -E -w 85% -h 75% 'perch tui'"));
         assert!(TMUX_SNIPPET.contains("bind N run-shell 'perch next'"));
-        assert!(TMUX_SNIPPET.contains("window-status-format ' #{@perch_flag}'"));
-        assert!(TMUX_SNIPPET.contains("window-status-current-format ' #{@perch_flag}'"));
         assert!(TMUX_SNIPPET.contains("after-select-window[42]"));
         assert!(TMUX_SNIPPET.contains("after-select-pane[42]"));
         assert!(TMUX_SNIPPET.contains("client-session-changed[42]"));
-        // Guarded appends: re-sourcing must not add a second flag.
-        assert_eq!(TMUX_SNIPPET.matches("if -F '#{m:*@perch_flag*").count(), 2);
+        // The window-status flag is gone: perch stays out of the window list.
+        assert!(!TMUX_SNIPPET.contains("@perch_flag"));
+        assert!(!TMUX_SNIPPET.contains("window-status-format"));
     }
 }

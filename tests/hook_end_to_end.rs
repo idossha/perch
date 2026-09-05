@@ -167,10 +167,9 @@ fn a_tool_call_unblocks_a_stale_needs_input() {
     assert!(events.contains("\"event\":\"idle_prompt\""), "{events}");
 }
 
-/// The instant cue: one tmux invocation carrying the pane state, the window
-/// flag and one flash per attached client.
+/// The instant cue: the pane option, then a detached `perch toast`.
 #[test]
-fn a_parent_transition_flashes_every_client_and_sets_the_window_flag() {
+fn a_parent_transition_sets_the_pane_state_and_asks_for_a_toast() {
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path();
     let log = p.join("tmux.log");
@@ -204,46 +203,37 @@ fn a_parent_transition_flashes_every_client_and_sets_the_window_flag() {
         .lines()
         .map(|l| l.to_string())
         .collect();
-    assert_eq!(lines.len(), 1, "one invocation per transition: {lines:?}");
-    let line = &lines[0];
-    assert!(
-        line.contains("set-option -p -t %999 @perch_state needs_input"),
-        "{line}"
+    assert_eq!(
+        lines.len(),
+        2,
+        "the option write, then the toast: {lines:?}"
     );
-    assert!(
-        line.contains("set-option -w -t %999 @perch_flag ⚑"),
-        "{line}"
-    );
-    assert!(
-        line.contains("display-message -c /dev/ttys001 -d 4000"),
-        "{line}"
-    );
-    assert!(
-        line.contains("display-message -c /dev/ttys002 -d 4000"),
-        "{line}"
-    );
-    assert!(line.contains("needs input — prefix N jumps"), "{line}");
+    assert_eq!(lines[0], "set-option -p -t %999 @perch_state needs_input");
+    assert_eq!(lines[1], "toast needs_input perch (claude) needs input");
+    // Nothing may leak into the window list any more.
+    assert!(!lines.join("\n").contains("@perch_flag"));
+    assert!(!lines.join("\n").contains("display-message"));
 
     // A subagent event is not a parent transition: no cue at all.
     hook(&fixture("subagent_start.json"));
-    assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 1);
+    assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 2);
 
-    // Working clears the flag and says nothing.
+    // Working sets the state and says nothing else.
     hook(&fixture("user_prompt_submit.json"));
-    let last = std::fs::read_to_string(&log).unwrap();
-    let last = last.lines().last().unwrap().to_string();
-    assert!(last.contains("@perch_flag "), "{last}");
-    assert!(!last.contains("display-message"), "{last}");
+    let body = std::fs::read_to_string(&log).unwrap();
+    let last = body.lines().last().unwrap().to_string();
+    assert_eq!(last, "set-option -p -t %999 @perch_state working");
+    assert_eq!(body.lines().filter(|l| l.starts_with("toast ")).count(), 1);
 }
 
-/// `[notify] tmux_message = false` keeps the options and drops the flash.
+/// `[toast] enabled = false` keeps the pane option and drops the toast.
 #[test]
-fn the_flash_can_be_turned_off() {
+fn the_toast_can_be_turned_off() {
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path();
     let cfg = p.join("config");
     std::fs::create_dir_all(&cfg).unwrap();
-    std::fs::write(cfg.join("config.toml"), "[notify]\ntmux_message = false\n").unwrap();
+    std::fs::write(cfg.join("config.toml"), "[toast]\nenabled = false\n").unwrap();
     let log = p.join("tmux.log");
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_perch"));
@@ -265,8 +255,8 @@ fn the_flash_can_be_turned_off() {
         .unwrap();
     assert!(child.wait().unwrap().success());
     let line = std::fs::read_to_string(&log).unwrap();
-    assert!(line.contains("@perch_flag ⚑"), "{line}");
-    assert!(!line.contains("display-message"), "{line}");
+    assert!(line.contains("@perch_state needs_input"), "{line}");
+    assert!(!line.contains("toast"), "{line}");
 }
 
 /// Subagent events land under the parent pane's record, never as panes of

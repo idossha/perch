@@ -200,3 +200,31 @@ next` looks at it.
 
 **Revisit if** the `PreToolUse` cost shows up in practice, or a harness starts
 reporting "the dialog is gone" directly.
+
+## 10. A toast popup instead of a window flag — 2026-09-05
+
+**Decision.** A parent transition draws a borderless one-line
+`display-popup` in the bottom-right corner of every attached client (`-B -E -x
+R -y P -h 1`), styled green `✓` or red `⚑`, which fades through two dimmer
+styles over its last 600 ms and vanishes. The first keystroke dismisses it and
+is forwarded verbatim to the client's active pane with `send-keys -l --`. The
+`@perch_flag` window-status marker, the two guarded `window-status-format`
+appends and the per-client `display-message` flash are gone, along with the
+`[notify] tmux_message` and `duration_ms` keys; `[toast] enabled /
+duration_ms / done_style / needs_input_style` replaces them.
+
+**Why.** The flag wrote perch's state into the user's window list and stayed
+there, in a line the user had themselves designed; the flash borrowed the
+status line, which is also theirs. A toast borrows a corner for three seconds
+and gives it back. Keystroke passthrough is what makes it safe to draw over
+someone who is typing: without it the toast is a trap, because a popup takes
+the keyboard and the character is lost.
+
+**Cost.** `display-popup` needs tmux 3.2, and the toast is one process per
+attached client (plus the `perch toast` launcher) rather than one for all of
+them — off the hook's critical path, but not free. A toast can be replaced by
+the next one before it is read, and a user with no client attached sees
+nothing, where the flag persisted.
+
+**Revisit if** `display-popup` proves too heavy on many clients, or tmux gains
+a real non-focus-stealing notification.
