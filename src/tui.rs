@@ -806,6 +806,7 @@ fn event_loop<B: Backend>(term: &mut Terminal<B>, app: &mut App, tmux: &dyn Tmux
                         if let Some(rec) = app.current() {
                             let pane = rec.pane.clone();
                             tmux.focus(&pane);
+                            crate::hook::seen(&pane);
                         }
                         return Ok(());
                     }
