@@ -10,13 +10,16 @@ mod e2e;
 
 use std::time::Duration;
 
-use e2e::{seed_record, wait_for, Server, PERCH_BIN};
+use e2e::{seed_record, wait_for, Server};
 
 /// Start the dashboard in `host` and wait until it has drawn.
 fn start_tui(s: &Server, host: &str, client: &str) {
     s.send_keys(
         host,
-        &[&format!("{PERCH_BIN} tui --client '{client}'"), "Enter"],
+        &[
+            &e2e::perch_in_pane(&format!("tui --client '{client}'")),
+            "Enter",
+        ],
     );
     assert!(
         wait_for(

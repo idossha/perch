@@ -29,6 +29,16 @@ static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 pub const PERCH_BIN: &str = env!("CARGO_BIN_EXE_perch");
 
+/// The command line to type into a pane to run perch there.
+///
+/// CI exports `PERCH_NO_TMUX=1` for the whole job so the unit tests stay
+/// hermetic; a shell inside the private server inherits it and the
+/// dashboard would then see no live panes. `PerchRun` strips it for direct
+/// invocations; this does the same for in-pane ones.
+pub fn perch_in_pane(args: &str) -> String {
+    format!("env -u PERCH_NO_TMUX PERCH_NO_SOUND=1 {PERCH_BIN} {args}")
+}
+
 /// `true` when a tmux binary is on `PATH`. CI without tmux skips, never fails.
 pub fn tmux_available() -> bool {
     Command::new("tmux")

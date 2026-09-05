@@ -6,7 +6,7 @@ mod e2e;
 
 use std::time::Duration;
 
-use e2e::{seed_record, wait_for, Server, PERCH_BIN};
+use e2e::{seed_record, wait_for, Server};
 
 #[test]
 fn the_tui_renders_the_seeded_rows_in_a_real_pane() {
@@ -34,7 +34,7 @@ fn the_tui_renders_the_seeded_rows_in_a_real_pane() {
     s.send_keys(
         &host,
         &[
-            &format!("{PERCH_BIN} tui --client '{}'", client.name),
+            &e2e::perch_in_pane(&format!("tui --client '{}'", client.name)),
             "Enter",
         ],
     );
