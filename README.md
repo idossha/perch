@@ -110,6 +110,7 @@ perch status [--format plain|tmux]    one-line summary for the status bar
 perch next                            focus the oldest waiting pane
 perch tui                             the dashboard
 perch sound test <event>              play the sound for done | needs_input | error
+perch seen <pane>                     mark a pane seen: done -> idle
 perch install <claude|codex|pi|tmux> [--dry-run] [--print] [--apply]
 perch setup [--dry-run] [--yes] [--no-tmux] [--only ...]
 perch doctor [--json]
@@ -211,6 +212,13 @@ an hour later, or immediately after `tmux kill-pane` plus a refresh.
 with `[notify] tmux_message = false`; `duration_ms` sets how long it stays up,
 and `desktop = true` adds a macOS notification.
 
+**A pane says `needs_input` but nothing is waiting.** That should no longer
+happen: `needs_input` now means only a real approval or question dialog
+(Claude's `permission_prompt`, `elicitation_*`, `agent_needs_input`, or a codex
+`PermissionRequest`). Claude's `idle_prompt` nudge is logged and ignored, and a
+stale `needs_input` clears on the next tool call. If you are on an older
+install, re-run `perch setup` — the `PreToolUse` hook is new.
+
 **A subagent is missing.** Subagents show as indented rows under their pane,
 and only while the harness reports them: they are cleared by your next prompt
 and pruned ten minutes after they finish. If none ever appear, re-run
@@ -228,6 +236,24 @@ to `<dir>/<harness>-<event>-<timestamp>.json`.
 **Nothing shows up at all.** Confirm the hooks merged
 (`perch install claude --dry-run` should say "already installed for every
 event") and that you are inside tmux (`echo $TMUX_PANE`).
+
+## What the states mean
+
+perch uses herdr's definitions:
+
+| state | meaning |
+|---|---|
+| `working` | a turn is in progress |
+| `needs_input` | a real approval or question is on screen; the agent is blocked on you |
+| `done` | the turn finished and you have not looked at the pane since |
+| `idle` | ready for input, and seen |
+| `starting` / `ended` | the session has not reported yet / its pane is gone |
+
+**`done` means finished while you were elsewhere; `idle` means you have seen
+it.** A turn that ends in the pane you are watching goes straight to `idle`
+without a chime, focusing a pane marks it seen (`pane-focus-in` runs
+`perch seen`), and so do `prefix + N` and the TUI's jump. `needs_input` always
+sounds.
 
 ## Docs
 

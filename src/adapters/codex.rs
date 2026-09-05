@@ -37,6 +37,8 @@ pub fn parse(raw: &serde_json::Value) -> anyhow::Result<Option<ParsedEvent>> {
             reason: "permission_request".to_string(),
         },
         "SessionEnd" if agent_id.is_none() => Event::SessionEnd,
+        // Proof the agent is running again: clears a stale `needs_input`.
+        "PreToolUse" if agent_id.is_none() => Event::ToolUse,
         // Pre/PostCompact and Pre/PostToolUse are noise here.
         _ => return Ok(None),
     };

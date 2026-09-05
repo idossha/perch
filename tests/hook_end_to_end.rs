@@ -74,6 +74,99 @@ fn a_prompt_then_stop_leaves_a_done_record() {
     assert!(events.contains("\"event\":\"stop\""));
 }
 
+/// A turn that ends while you are watching the pane is `idle`, not `done`,
+/// and `perch seen` is what says "I have looked at it".
+#[test]
+fn done_means_finished_while_you_were_elsewhere() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path();
+    let state = |args: &[&str], stdin: Option<&str>, focused: bool| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_perch"));
+        cmd.args(args)
+            .env("PERCH_STATE_DIR", p)
+            .env("PERCH_CONFIG_DIR", p.join("config"))
+            .env("PERCH_NO_SOUND", "1")
+            .env("PERCH_NO_TMUX", "1")
+            .env("TMUX_PANE", "%999")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        if focused {
+            cmd.env("PERCH_FAKE_PANE_FOCUSED", "1");
+        }
+        let mut child = cmd.spawn().unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(stdin.unwrap_or("").as_bytes())
+            .unwrap();
+        assert!(child.wait().unwrap().success());
+        let body = std::fs::read_to_string(p.join("panes/_999.json")).unwrap_or_default();
+        serde_json::from_str::<serde_json::Value>(&body)
+            .map(|v| v["state"].as_str().unwrap_or("").to_string())
+            .unwrap_or_default()
+    };
+
+    state(
+        &["hook", "claude"],
+        Some(&fixture("user_prompt_submit.json")),
+        false,
+    );
+    assert_eq!(
+        state(&["hook", "claude"], Some(&fixture("stop.json")), true),
+        "idle",
+        "a turn you watched end is idle"
+    );
+
+    state(
+        &["hook", "claude"],
+        Some(&fixture("user_prompt_submit.json")),
+        false,
+    );
+    assert_eq!(
+        state(&["hook", "claude"], Some(&fixture("stop.json")), false),
+        "done"
+    );
+    assert_eq!(state(&["seen", "%999"], None, false), "idle");
+    // Seeing an idle pane again is a no-op.
+    assert_eq!(state(&["seen", "%999"], None, false), "idle");
+}
+
+/// A tool call clears a `needs_input` that was answered outside perch's view.
+#[test]
+fn a_tool_call_unblocks_a_stale_needs_input() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path();
+    assert!(
+        run(
+            p,
+            &["hook", "claude"],
+            Some(&fixture("notification_permission_prompt.json"))
+        )
+        .2
+    );
+    assert!(run(p, &["hook", "claude"], Some(&fixture("pre_tool_use.json"))).2);
+    let body = std::fs::read_to_string(p.join("panes/_999.json")).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["state"], "working");
+
+    // idle_prompt is logged and changes nothing.
+    assert!(
+        run(
+            p,
+            &["hook", "claude"],
+            Some(&fixture("notification_idle_prompt.json"))
+        )
+        .2
+    );
+    let body = std::fs::read_to_string(p.join("panes/_999.json")).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["state"], "working");
+    let events = std::fs::read_to_string(p.join("events.jsonl")).unwrap();
+    assert!(events.contains("\"event\":\"idle_prompt\""), "{events}");
+}
+
 /// The instant cue: one tmux invocation carrying the pane state, the window
 /// flag and one flash per attached client.
 #[test]

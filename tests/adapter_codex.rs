@@ -71,9 +71,12 @@ fn alias_field_names_are_accepted() {
 
 #[test]
 fn untracked_events_are_dropped() {
-    for f in ["pre_tool_use.json", "post_compact.json"] {
-        assert!(parse(f).is_none(), "{f}");
-    }
+    assert!(parse("post_compact.json").is_none());
+}
+
+#[test]
+fn pre_tool_use_is_proof_the_agent_is_running() {
+    assert_eq!(parse("pre_tool_use.json").unwrap().event, Event::ToolUse);
 }
 
 #[test]

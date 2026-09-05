@@ -44,7 +44,6 @@ fn stop_carries_the_last_message() {
 fn needs_input_notifications() {
     for (file, reason) in [
         ("notification_permission_prompt.json", "permission_prompt"),
-        ("notification_idle_prompt.json", "idle_prompt"),
         ("notification_agent_needs_input.json", "agent_needs_input"),
         ("notification_elicitation_dialog.json", "elicitation_dialog"),
     ] {
@@ -69,6 +68,36 @@ fn agent_completed_is_done() {
 #[test]
 fn session_end() {
     assert_eq!(parse("session_end.json").unwrap().event, Event::SessionEnd);
+}
+
+/// `idle_prompt` is Claude nudging you after 60 s of quiet, not a question:
+/// it is logged and changes nothing. Same for auth and quota notices.
+#[test]
+fn idle_and_informational_notifications_are_only_observed() {
+    for (file, label) in [
+        ("notification_idle_prompt.json", "idle_prompt"),
+        ("notification_auth_success.json", "auth_success"),
+    ] {
+        assert_eq!(
+            parse(file).unwrap().event,
+            Event::Observed {
+                label: label.into()
+            },
+            "{file}"
+        );
+    }
+}
+
+/// An answered dialog, and any tool call, prove the agent is running again.
+#[test]
+fn a_finished_dialog_or_a_tool_call_is_tool_use() {
+    assert_eq!(
+        parse("notification_elicitation_complete.json")
+            .unwrap()
+            .event,
+        Event::ToolUse
+    );
+    assert_eq!(parse("pre_tool_use.json").unwrap().event, Event::ToolUse);
 }
 
 #[test]

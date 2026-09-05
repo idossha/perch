@@ -19,6 +19,12 @@ pub trait Tmux {
     fn list_clients(&self) -> Vec<String> {
         Vec::new()
     }
+    /// `true` when this pane is the active pane of an attached client — the
+    /// user is looking at it right now.
+    fn pane_focused(&self, _pane: &str) -> bool {
+        false
+    }
+
     /// Run several tmux commands in one invocation, separated by `;`.
     ///
     /// The hook is on the harness's critical path, so the cue is one spawned
@@ -71,6 +77,11 @@ impl NullTmux {
 impl Tmux for NullTmux {
     fn list_panes(&self) -> Vec<LivePane> {
         self.panes.clone()
+    }
+
+    /// `PERCH_FAKE_PANE_FOCUSED=1` stands in for a focused pane in tests.
+    fn pane_focused(&self, _pane: &str) -> bool {
+        std::env::var("PERCH_FAKE_PANE_FOCUSED").is_ok_and(|v| v == "1")
     }
 
     /// `PERCH_FAKE_CLIENTS` stands in for attached clients under `PERCH_NO_TMUX`.
@@ -144,6 +155,20 @@ impl Tmux for RealTmux {
             .map(|l| l.trim().to_string())
             .filter(|l| !l.is_empty())
             .collect()
+    }
+
+    fn pane_focused(&self, pane: &str) -> bool {
+        let out = Command::new("tmux")
+            .args([
+                "display",
+                "-p",
+                "-t",
+                pane,
+                "#{pane_active}#{window_active}#{session_attached}",
+            ])
+            .output();
+        let Ok(out) = out else { return false };
+        out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "111"
     }
 
     /// One `tmux a ; b ; c` invocation, spawned and never waited on.

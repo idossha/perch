@@ -33,10 +33,22 @@ pub fn run(harness: Harness) -> anyhow::Result<()> {
     };
 
     let now = store::now_rfc3339();
-    let mut rec = store::load(&pane).unwrap_or_else(|| PaneRecord::new(&pane, harness, &now));
+    let existing = store::load(&pane);
+    let is_new = existing.is_none();
+    let mut rec = existing.unwrap_or_else(|| PaneRecord::new(&pane, harness, &now));
     rec.harness = harness;
-    let applied = reducer::apply(&mut rec, &parsed, &now);
+    // Only a Stop asks tmux where the user is looking; it is the one event
+    // whose meaning depends on it, and the answer costs a round trip.
+    let focused = matches!(parsed.event, crate::model::Event::Stop { .. })
+        && tmux::current().pane_focused(&pane);
+    let applied = reducer::apply_with(&mut rec, &parsed, &now, focused);
     let changed = applied.parent_changed;
+
+    // A tool call or an observed notice on a pane perch has never seen is not
+    // worth inventing a record for; the next real event will make one.
+    if is_new && !changed {
+        return Ok(());
+    }
 
     // Sound before the write, so the cooldown stamp lands in the same record.
     if let Some(key) = applied.sound {
@@ -57,6 +69,28 @@ pub fn run(harness: Harness) -> anyhow::Result<()> {
         cue(&rec, &pane);
     }
     Ok(())
+}
+
+/// Mark a pane as seen: a finished turn you are now looking at is just idle.
+///
+/// Called from `pane-focus-in`, from `perch next` and from the TUI's jump, so
+/// `done` means "finished while you were elsewhere" everywhere.
+pub fn seen(pane: &str) -> bool {
+    let Some(mut rec) = store::load(pane) else {
+        return false;
+    };
+    if rec.state != crate::model::State::Done {
+        return false;
+    }
+    rec.state = crate::model::State::Idle;
+    rec.since = store::now_rfc3339();
+    let _ = store::save(&rec);
+    let t = tmux::current();
+    t.batch(&[
+        opt("-p", pane, "@perch_state", "idle"),
+        opt("-w", pane, "@perch_flag", ""),
+    ]);
+    true
 }
 
 /// The instant cue for a parent transition: the pane's `@perch_state`, the

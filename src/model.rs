@@ -89,10 +89,18 @@ pub enum Event {
     SubagentStop {
         last_message: Option<String>,
     },
+    /// A tool is about to run: the agent is working, whatever it was doing
+    /// before. Only ever clears a stale `needs_input`.
+    ToolUse,
+    /// Understood, recorded in the event log, and deliberately not a state
+    /// change — Claude's `idle_prompt` nudge, `auth_success`, quota notices.
+    Observed {
+        label: String,
+    },
 }
 
 impl Event {
-    pub fn kind(&self) -> &'static str {
+    pub fn kind(&self) -> &str {
         match self {
             Event::SessionStart => "session_start",
             Event::UserPromptSubmit => "user_prompt_submit",
@@ -102,6 +110,8 @@ impl Event {
             Event::SessionEnd => "session_end",
             Event::SubagentStart { .. } => "subagent_start",
             Event::SubagentStop { .. } => "subagent_stop",
+            Event::ToolUse => "tool_use",
+            Event::Observed { label } => label,
         }
     }
 }

@@ -173,3 +173,28 @@ a real accepted config.
 
 **Revisit if** codex publishes a command to trust a hook non-interactively, or
 changes the fingerprint, at which point perch should call it instead.
+
+## 9. herdr's state definitions, verbatim — 2026-09-05
+
+**Decision.** `needs_input` means a real approval or question dialog and
+nothing else; `done` means a turn finished while the pane was not being looked
+at; `idle` means ready and seen. Claude's `idle_prompt` (and `auth_success`,
+`quota_*`) is recorded and ignored. A `Stop` on the focused pane goes to `idle`
+silently. `perch seen <pane>`, run from `pane-focus-in`, from `perch next` and
+from the TUI, performs the transition back to `idle`; a `PreToolUse` clears a
+`needs_input` nobody told perch about.
+
+**Why.** Mapping `idle_prompt` to `needs_input` made every pane you had not
+touched for a minute claim to be waiting on you, which is exactly the signal
+the dashboard exists to protect. herdr already had definitions that survive
+contact with real sessions; adopting them wholesale is cheaper than inventing
+a second vocabulary, and makes `done` mean something a glance can trust.
+
+**Cost.** perch now subscribes to `PreToolUse`, so a hook process runs on every
+tool call; the reducer returns immediately unless the pane is `needs_input`.
+Deciding a `Stop` costs one blocking `tmux display -p`. Focus tracking needs
+`focus-events on` and a terminal that reports focus; without it, a pane you are
+watching reads `done` until you switch to it — the old behaviour.
+
+**Revisit if** the `PreToolUse` cost shows up in practice, or a harness starts
+reporting "the dialog is gone" directly.

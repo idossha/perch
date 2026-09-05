@@ -20,6 +20,20 @@ pub struct Applied {
 /// An event carrying `agent_id` updates the pane's `children` and leaves the
 /// pane's own state alone; everything else is a parent transition.
 pub fn apply(rec: &mut PaneRecord, parsed: &ParsedEvent, now: &str) -> Applied {
+    apply_with(rec, parsed, now, false)
+}
+
+/// [`apply`], told whether the pane is the active pane of an attached client.
+///
+/// A turn that ends while you are looking at it is not news: it goes straight
+/// to `idle` and stays silent. `done` means "finished while you were
+/// elsewhere".
+pub fn apply_with(
+    rec: &mut PaneRecord,
+    parsed: &ParsedEvent,
+    now: &str,
+    pane_focused: bool,
+) -> Applied {
     if let Some(agent_id) = &parsed.agent_id {
         let out = apply_child(rec, agent_id, parsed, now);
         prune_children(rec, now);
@@ -40,13 +54,28 @@ pub fn apply(rec: &mut PaneRecord, parsed: &ParsedEvent, now: &str) -> Applied {
             if let Some(m) = last_message {
                 rec.last_message = Some(one_line(m));
             }
-            State::Done
+            if pane_focused {
+                State::Idle
+            } else {
+                State::Done
+            }
         }
         Event::NeedsInput { reason } => {
             rec.last_message = Some(one_line(reason));
             State::NeedsInput
         }
         Event::Completed => State::Done,
+        // A tool call proves the agent is running again, which is the only way
+        // a `needs_input` that was answered outside perch's view clears.
+        Event::ToolUse => {
+            if rec.state == State::NeedsInput {
+                State::Working
+            } else {
+                return Applied::default();
+            }
+        }
+        // Recorded in the event log, never a state change.
+        Event::Observed { .. } => return Applied::default(),
         Event::SessionEnd => State::Ended,
         // A subagent event that names no child moves nothing.
         Event::SubagentStart { .. } | Event::SubagentStop { .. } => return Applied::default(),
@@ -419,5 +448,99 @@ mod subagent_tests {
             "not-a-time",
         );
         assert_eq!(r.children.len(), 2);
+    }
+}
+
+/// herdr's state definitions, which perch adopted wholesale.
+#[cfg(test)]
+mod semantics_tests {
+    use super::tests_support::*;
+    use super::*;
+    use crate::model::{Harness, State};
+
+    fn pane(state: State) -> PaneRecord {
+        let mut r = PaneRecord::new("%1", Harness::Claude, "t0");
+        r.state = state;
+        r
+    }
+
+    #[test]
+    fn an_idle_prompt_or_quota_notice_changes_nothing() {
+        for label in ["idle_prompt", "auth_success", "quota_exceeded"] {
+            let mut r = pane(State::Working);
+            let out = apply(
+                &mut r,
+                &top(Event::Observed {
+                    label: label.into(),
+                }),
+                "t1",
+            );
+            assert!(!out.parent_changed, "{label}");
+            assert_eq!(out.sound, None, "{label}");
+            assert_eq!(r.state, State::Working, "{label}");
+        }
+    }
+
+    #[test]
+    fn stop_is_done_when_you_are_elsewhere_and_idle_when_you_are_looking() {
+        let mut away = pane(State::Working);
+        let out = apply_with(
+            &mut away,
+            &top(Event::Stop { last_message: None }),
+            "t1",
+            false,
+        );
+        assert_eq!(away.state, State::Done);
+        assert_eq!(out.sound, Some("done"));
+
+        let mut watching = pane(State::Working);
+        let out = apply_with(
+            &mut watching,
+            &top(Event::Stop {
+                last_message: Some("finished".into()),
+            }),
+            "t1",
+            true,
+        );
+        assert_eq!(watching.state, State::Idle, "seen means idle, not done");
+        assert_eq!(out.sound, None, "no chime for a turn you watched end");
+        assert_eq!(watching.last_message.as_deref(), Some("finished"));
+    }
+
+    #[test]
+    fn needs_input_always_sounds() {
+        let mut r = pane(State::Working);
+        let out = apply(
+            &mut r,
+            &top(Event::NeedsInput {
+                reason: "permission_prompt".into(),
+            }),
+            "t1",
+        );
+        assert_eq!(r.state, State::NeedsInput);
+        assert_eq!(out.sound, Some("needs_input"));
+    }
+
+    #[test]
+    fn a_tool_call_clears_a_stale_needs_input_and_nothing_else() {
+        let mut blocked = pane(State::NeedsInput);
+        let out = apply(&mut blocked, &top(Event::ToolUse), "t1");
+        assert_eq!(blocked.state, State::Working);
+        assert!(out.parent_changed);
+        assert_eq!(out.sound, None);
+
+        for state in [State::Idle, State::Done, State::Working, State::Ended] {
+            let mut r = pane(state);
+            let out = apply(&mut r, &top(Event::ToolUse), "t1");
+            assert_eq!(r.state, state, "{state:?}");
+            assert!(!out.parent_changed, "{state:?}");
+        }
+    }
+
+    #[test]
+    fn a_new_prompt_also_clears_needs_input() {
+        let mut r = pane(State::NeedsInput);
+        apply(&mut r, &top(Event::UserPromptSubmit), "t1");
+        assert_eq!(r.state, State::Working);
     }
 }

@@ -36,42 +36,47 @@ pane's record and returns whether the state changed.
 |---|---|---|---|
 | `SessionStart` | `hook_event_name: SessionStart` | `idle` | — |
 | `UserPromptSubmit` | `hook_event_name: UserPromptSubmit` | `working` | — |
-| `Stop` | `hook_event_name: Stop` | `done` | `last_message` = `last_assistant_message` |
-| `NeedsInput` | `Notification` with `notification_type` in `permission_prompt`, `idle_prompt`, `agent_needs_input`, `elicitation_*` | `needs_input` | `last_message` = the notification type |
+| `Stop` | `hook_event_name: Stop` | `idle` if the pane is focused, else `done` | `last_message` = `last_assistant_message` |
+| `NeedsInput` | `Notification` with `notification_type` in `permission_prompt`, `elicitation_dialog`, `elicitation_url_dialog`, `agent_needs_input`; codex `PermissionRequest` | `needs_input` | `last_message` = the notification type |
 | `Completed` | `Notification` with `agent_completed` | `done` | — |
+| `ToolUse` | `PreToolUse`, or `Notification` `elicitation_complete` / `elicitation_response` | `working`, and only from `needs_input` | — |
+| `Observed` | any other `Notification` — `idle_prompt`, `auth_success`, `quota_*` | unchanged | logged only |
 | `SessionEnd` | `hook_event_name: SessionEnd` | `ended` | — |
 
-Anything else — an unrecognised notification type, `PreCompact` and friends —
-parses to `None` and is a no-op.
-`session_id` and `cwd` are recorded whenever present; `project` is the last
-path component of `cwd`. `since` moves only on an actual state change, so age
-means "time in this state". `last_message` is whitespace-collapsed and capped
-at 400 characters.
+The states mean what they mean in herdr, which is where the vocabulary comes
+from:
 
-## Subagents
+- **`working`** — a turn is in progress.
+- **`needs_input`** — a real approval or question is on screen and the agent is
+  blocked on you. Nothing else sets it; in particular `idle_prompt`, Claude's
+  "you have been idle" nudge, is not a request and never does.
+- **`done`** — the turn finished and the pane has not been seen since.
+- **`idle`** — ready for input, and seen.
 
-Claude and Codex both report subagents: `SubagentStart` / `SubagentStop`, and
-`Stop` or `Notification` carrying an `agent_id` when the subagent rather than
-the session produced them. An event with an `agent_id` never moves the pane's
-own state; it folds into `children` on the parent record instead.
+**`done` means finished while you were elsewhere; `idle` means you have seen
+it.** So a `Stop` for the pane you are actually watching (tmux
+`display -p -t <pane> '#{pane_active}#{window_active}#{session_attached}'` is
+`111`) goes to `idle` and stays silent, while every other `Stop` is `done` and
+chimes. `needs_input` always sounds.
 
-| event (with `agent_id`) | child |
-|---|---|
-| `SubagentStart` | pushed as `working`, with `agent_type` when given |
-| `SubagentStop`, or `Stop` | `done`, `last_message` = its final message |
-| `Notification` (needs-input type) | `needs_input` on that child |
+`perch seen <pane>` performs the other half: `done` becomes `idle` and the
+window flag clears; anything else is a no-op. The tmux snippet wires it to
+`pane-focus-in` (with `focus-events on`), and `perch next` and the TUI's jump
+call the same code for the pane they move you to.
 
-`reducer::apply` returns `Applied { parent_changed, sound }`: a subagent event
-sets `parent_changed: false`, so it plays no sound, prints no tmux cue and
-moves no window flag — with one exception, `notification_type:
-agent_needs_input`, which is the human being blocked and does sound.
+A `needs_input` that you answered where perch could not see it — in the pane
+itself — clears on the next proof that the agent is running: a `PreToolUse`
+hook, an `elicitation_complete` / `elicitation_response` notification, or your
+next prompt. `PreToolUse` fires often, so the reducer returns immediately
+unless the pane is actually `needs_input`; the cost is one short-lived process
+per tool call.
 
-Children are garbage-collected on writes, never by a timer: a `done` or `ended`
-child older than ten minutes is dropped on the next event for that pane, and
-the parent's next `UserPromptSubmit` or `Stop` clears every `done` child, since
-a new turn spawns its own. `perch list --json` carries `children`; the TUI
-shows them indented under their pane, and jumping to one lands on the parent
-pane, because a subagent has no pane of its own.
+Anything else — an unrecognised notification, `PreCompact` and friends — parses
+to `None` and is a no-op. `session_id` and `cwd` are recorded whenever present;
+`project` is the last path component of `cwd`. `since` moves only on an actual
+state change, so age means "time in this state". `last_message` is
+whitespace-collapsed and capped at 400 characters. An event that changes
+nothing on a pane perch has never seen creates no record.
 
 States rank `needs_input < done < working < starting < idle < ended`; that rank
 then `since` ascending is the sort used by `list`, `next` and the TUI, so "the

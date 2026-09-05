@@ -81,6 +81,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `last_assistant_message`/`last_message`.
 - MIT LICENSE.
 
+### Fixed
+
+- Panes no longer sit in `needs_input` when nothing is waiting. `needs_input`
+  now means only a real approval or question dialog — `permission_prompt`,
+  `elicitation_dialog`, `elicitation_url_dialog`, `agent_needs_input` and codex
+  `PermissionRequest`. Claude's `idle_prompt` nudge (and `auth_success`,
+  `quota_*`) is recorded in `events.jsonl` and changes nothing, and a stale
+  `needs_input` clears on the next `PreToolUse`, on `elicitation_complete` /
+  `elicitation_response`, or on your next prompt.
+- `done` now means "finished while you were elsewhere": a turn that ends in the
+  pane you are watching goes to `idle` silently. New `perch seen <pane>` marks
+  a pane seen (`done` → `idle`, flag cleared); the tmux snippet runs it from
+  `pane-focus-in`, and `perch next` calls it for the pane it moves you to.
+  Re-run `perch setup` to pick up the `PreToolUse` hook and the new snippet.
+
 ### Known limitations
 
 - Homebrew cannot write to `$HOME`, so a brew install needs one `perch setup`;

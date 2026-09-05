@@ -6,13 +6,18 @@
 
 use crate::model::{Event, ParsedEvent};
 
-/// Notification types that mean "the human has to do something".
+/// Notification types that mean the human is blocking the agent: an approval
+/// or a question with a dialog on screen. `idle_prompt` is deliberately absent
+/// — it is Claude's "you have been idle" nudge, not a request.
 const NEEDS_INPUT: &[&str] = &[
     "permission_prompt",
-    "idle_prompt",
     "agent_needs_input",
     "elicitation_dialog",
+    "elicitation_url_dialog",
 ];
+
+/// Notification types that end a dialog: whatever was asked has been answered.
+const NEEDS_INPUT_CLEARED: &[&str] = &["elicitation_complete", "elicitation_response"];
 
 pub fn parse(raw: &serde_json::Value) -> anyhow::Result<Option<ParsedEvent>> {
     let agent_id = str_field(raw, "agent_id");
@@ -44,16 +49,25 @@ pub fn parse(raw: &serde_json::Value) -> anyhow::Result<Option<ParsedEvent>> {
                 .unwrap_or("");
             if kind == "agent_completed" {
                 Event::Completed
-            } else if NEEDS_INPUT.contains(&kind) || kind.starts_with("elicitation") {
+            } else if NEEDS_INPUT.contains(&kind) {
                 Event::NeedsInput {
                     reason: kind.to_string(),
                 }
-            } else {
+            } else if NEEDS_INPUT_CLEARED.contains(&kind) {
+                Event::ToolUse
+            } else if kind.is_empty() {
                 // An unrecognised notification is not a state change.
                 return Ok(None);
+            } else {
+                // idle_prompt, auth_success, quota_* and friends: logged, not
+                // acted on.
+                Event::Observed {
+                    label: kind.to_string(),
+                }
             }
         }
         "SessionEnd" if agent_id.is_none() => Event::SessionEnd,
+        "PreToolUse" if agent_id.is_none() => Event::ToolUse,
         // PreCompact and friends are noise for the dashboard; so is a
         // session-level event attributed to a subagent.
         _ => return Ok(None),

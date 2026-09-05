@@ -17,6 +17,7 @@ pub const CLAUDE_EVENTS: &[&str] = &[
     "SessionEnd",
     "SubagentStart",
     "SubagentStop",
+    "PreToolUse",
 ];
 
 /// The Codex hook events perch subscribes to. Codex names `PermissionRequest`
@@ -29,6 +30,7 @@ pub const CODEX_EVENTS: &[&str] = &[
     "SessionEnd",
     "SubagentStart",
     "SubagentStop",
+    "PreToolUse",
 ];
 
 /// Marker used to decide whether perch is already installed in a hook array.
@@ -331,6 +333,9 @@ bind N run-shell 'perch next'
 # Per-window flag: ⚑ waiting on you, ✓ finished. Empty the rest of the time.
 set -ga window-status-format ' #{@perch_flag}'
 set -ga window-status-current-format ' #{@perch_flag}'
+# Looking at a finished pane marks it seen: done -> idle, flag cleared.
+set -g focus-events on
+set-hook -ga pane-focus-in \"run-shell -b 'perch seen #{pane_id}'\"
 # Opt in to a status-line counter by prepending it to your theme's status-right, e.g.:
 #   set -ga status-right '#(perch status --format tmux) '
 ";
@@ -456,5 +461,7 @@ mod tests {
         assert!(TMUX_SNIPPET.contains("bind N run-shell 'perch next'"));
         assert!(TMUX_SNIPPET.contains("window-status-format ' #{@perch_flag}'"));
         assert!(TMUX_SNIPPET.contains("window-status-current-format ' #{@perch_flag}'"));
+        assert!(TMUX_SNIPPET.contains("set -g focus-events on"));
+        assert!(TMUX_SNIPPET.contains("pane-focus-in"));
     }
 }

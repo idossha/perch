@@ -66,6 +66,8 @@ enum Cmd {
     },
     /// Jump the current client to the oldest waiting pane.
     Next,
+    /// Mark a pane as seen: `done` becomes `idle` and its flag clears.
+    Seen { pane: String },
     /// The dashboard (run inside `tmux display-popup`).
     Tui,
     /// Sound helpers.
@@ -150,6 +152,10 @@ fn dispatch(cmd: Cmd) -> anyhow::Result<()> {
             cmd_status(format)
         }
         Cmd::Next => cmd_next(),
+        Cmd::Seen { pane } => {
+            hook::seen(&pane);
+            Ok(())
+        }
         Cmd::Tui => tui::run(tmux::current().as_ref()),
         Cmd::Sound(SoundCmd::Test { event }) => {
             let cfg = config::load();
@@ -293,6 +299,7 @@ fn cmd_next() -> anyhow::Result<()> {
         return Ok(());
     };
     println!("{}", target.pane);
+    let pane = target.pane.clone();
     // The pane may live in another session, so move the client there first,
     // then select by pane id — never by window or session name.
     match t
@@ -304,5 +311,7 @@ fn cmd_next() -> anyhow::Result<()> {
         Some(session) => t.jump(&session, &target.pane),
         None => t.focus(&target.pane),
     }
+    // You are now looking at it.
+    hook::seen(&pane);
     Ok(())
 }
