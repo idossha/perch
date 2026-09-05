@@ -28,7 +28,8 @@ test file is its own binary — they run in parallel, each on its own server.
 - a private tmux server on `-L perch-e2e-<pid>-<n>` with `-f /dev/null`, under a
   temporary `TMUX_TMPDIR`, holding one session `one` with a `sleep` pane;
 - temporary `PERCH_STATE_DIR`, `PERCH_CONFIG_DIR` and `PERCH_HOME`, plus
-  `PERCH_NO_SOUND=1` and a config with the toast off;
+  `PERCH_NO_SOUND=1` and an empty `config.toml`, so a stray `~/.config/perch`
+  cannot reach a test;
 - a `Drop` that runs `kill-server`, so no server outlives its test even when the
   test panics.
 

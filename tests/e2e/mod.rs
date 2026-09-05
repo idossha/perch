@@ -75,9 +75,8 @@ impl Server {
         for d in [&tmux_tmpdir, &home, &state_dir, &config_dir] {
             std::fs::create_dir_all(d).unwrap();
         }
-        // The toast opens a popup on every attached client; these tests assert
-        // on captured text, so it stays off.
-        std::fs::write(config_dir.join("config.toml"), "[toast]\nenabled = false\n").unwrap();
+        // An empty config, so a stray ~/.config/perch cannot reach these tests.
+        std::fs::write(config_dir.join("config.toml"), "").unwrap();
 
         let n = NEXT.fetch_add(1, Ordering::SeqCst);
         let label = format!("perch-e2e-{}-{}", std::process::id(), n);
