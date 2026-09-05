@@ -228,3 +228,56 @@ nothing, where the flag persisted.
 
 **Revisit if** `display-popup` proves too heavy on many clients, or tmux gains
 a real non-focus-stealing notification.
+
+## 11. One jump primitive, with an explicit client — 2026-09-05
+
+**Decision.** Every command that moves a client issues exactly one
+`tmux switch-client -c <client_name> -t <pane_id>`, and the client is always
+named. `perch tui`, `perch next` and the new `perch open` all take `--client`;
+the tmux bindings pass `#{client_name}` through `run-shell`, and `perch open`
+is what launches the popup, because `display-popup` does not expand `#{…}` in
+its shell-command (tmux 3.6a) while bindings and `run-shell` do. `select-window`
+and `select-pane` are gone, as is `Tmux::focus`. Jumps are synchronous and
+checked; the pane is confirmed in `list-panes` first, and a failure shows
+`pane %N is gone` in the dashboard instead of closing it. The TUI's cursor is
+keyed by `Selection { pane, child }` rather than by row index.
+
+**Why.** Navigation from the dashboard was unreliable: sometimes the wrong
+pane, sometimes nothing. Two causes. A tmux command without `-c` picks a
+"current client" by heuristic — tty match, else most recent activity — so a
+jump issued from a popup's pty, or with a second client attached, moved
+whichever client tmux felt like. And the cursor was a row index into a list
+that reorders itself every second, so between drawing a row and pressing Enter
+the index could come to mean a different agent. Naming the client removes the
+guess; keying the selection removes the race. One atomic call also removes the
+window where a three-command sequence half-applied.
+
+**Cost.** The bindings are longer and `perch open` is an extra process between
+the key and the popup. A user who runs `perch tui` by hand must pass
+`--client`, or accept a warned guess. Anyone with the old snippet in their
+tmux.conf needs `perch setup` again.
+
+**Revisit if** tmux ever expands formats in `display-popup`'s shell-command,
+which would let the popup name its own client.
+
+## 12. Sound is the only cue — 2026-09-05
+
+**Decision.** The toast popup is deleted, with `perch toast`, `perch
+toast-body`, `src/toast.rs`, the `[toast]` and `[notify]` config tables and the
+`unicode-width` dependency. A transition plays a sound and writes
+`@perch_state` on the pane; nothing is drawn on the user's screen.
+
+**Why.** Every visual cue perch tried borrowed something that belongs to the
+user — the window list, the status line, or the keyboard. The toast was the
+least invasive of them and still needed keystroke passthrough, a fade, a
+per-client process and a tmux 3.2 floor to be merely tolerable. The sound
+already carried the whole message, and the dashboard is one keystroke away for
+the detail. Deleting the toast removes about 350 lines and a whole class of
+"it ate my keypress" failure.
+
+**Cost.** A user with sound off or muted now gets no interrupt at all; they
+learn about a finished agent from the status line or the dashboard. `perch
+toast test` is gone, as is the macOS notification banner.
+
+**Revisit if** users on muted machines ask for a visual cue — which should then
+be opt-in, and should not take the keyboard.

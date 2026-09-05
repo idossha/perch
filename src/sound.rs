@@ -63,28 +63,6 @@ pub fn play(cfg: &Config, event: &str) {
         .spawn();
 }
 
-/// Optional desktop notification, best-effort.
-pub fn notify(cfg: &Config, title: &str, body: &str) {
-    if !cfg.notify.desktop || !enabled() {
-        return;
-    }
-    let script = format!(
-        "display notification {} with title {}",
-        applescript_string(body),
-        applescript_string(title)
-    );
-    let _ = Command::new("/usr/bin/osascript")
-        .args(["-e", &script])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
-}
-
-fn applescript_string(s: &str) -> String {
-    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,10 +74,5 @@ mod tests {
             PathBuf::from("/System/Library/Sounds/Glass.aiff")
         );
         assert_eq!(sound_file("/tmp/a.aiff"), PathBuf::from("/tmp/a.aiff"));
-    }
-
-    #[test]
-    fn applescript_quotes_are_escaped() {
-        assert_eq!(applescript_string("a\"b"), "\"a\\\"b\"");
     }
 }

@@ -15,7 +15,6 @@ use crate::reducer;
 use crate::sound;
 use crate::store;
 use crate::tmux;
-use crate::toast;
 
 /// Run the hook. Always returns; errors are reported on stderr by the caller.
 pub fn run(harness: Harness) -> anyhow::Result<()> {
@@ -92,33 +91,13 @@ pub fn seen(pane: &str) -> bool {
     true
 }
 
-/// The instant cue for a parent transition: the pane's `@perch_state`, and a
-/// toast in the corner of every attached client.
+/// The instant cue for a parent transition.
 ///
-/// The option write is one spawned `tmux`, never waited on, and the toast is
-/// a detached `perch toast`, so the hook stays well inside its budget however
-/// many clients are attached.
+/// The sound is the notification; this writes the pane's `@perch_state` so a
+/// user's own status line can show it. One spawned `tmux`, never waited on, so
+/// the hook stays well inside its budget.
 fn cue(rec: &PaneRecord, pane: &str) {
     tmux::current().batch(&[opt("-p", pane, "@perch_state", rec.state.as_str())]);
-
-    let cfg = config::load();
-    if !cfg.toast.enabled {
-        return;
-    }
-    if let Some(kind) = toast::kind_for(rec.state) {
-        toast::spawn_detached(kind, &toast_text(rec));
-    }
-}
-
-/// `<project> (<harness>) needs input` — what the toast says.
-fn toast_text(rec: &PaneRecord) -> String {
-    let project = rec.project.clone().unwrap_or_else(|| rec.pane.clone());
-    let harness = rec.harness.as_str();
-    let what = match rec.state {
-        crate::model::State::NeedsInput => "needs input",
-        _ => "done",
-    };
-    format!("{project} ({harness}) {what}")
 }
 
 fn opt(scope: &str, pane: &str, name: &str, value: &str) -> Vec<String> {
@@ -173,14 +152,4 @@ fn maybe_sound(rec: &mut PaneRecord, key: &str) {
     }
     rec.last_sound_ms = Some(now_ms);
     sound::play(&cfg, key);
-    let project = rec.project.clone().unwrap_or_else(|| rec.pane.clone());
-    sound::notify(
-        &cfg,
-        &format!("perch: {}", rec.state.as_str()),
-        &format!(
-            "{} {}",
-            project,
-            rec.last_message.clone().unwrap_or_default()
-        ),
-    );
 }

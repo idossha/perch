@@ -101,41 +101,22 @@ so an old record still loads; an unparseable one is skipped rather than fatal.
 Config lives separately in `~/.config/perch/config.toml`
 (`PERCH_CONFIG_DIR`), next to the generated `perch.tmux.conf`.
 
-## The instant cue
+## The cue: sound, and nothing else
 
-A sound says *something* happened; the cue says *what*, without opening the
-dashboard. On a parent transition the hook
+**A sound is the only thing perch does to get your attention.** It costs no
+screen, cannot eat a keystroke, and needs no cleanup. The toast popup, the
+window-status flag, the status-line flash and the macOS `osascript` banner are
+all gone, along with `[toast]` and `[notify]`.
 
-- writes `set-option -p @perch_state <state>` on the pane, spawned and not
-  waited on, and
-- spawns a detached `perch toast <kind> "<project> (<harness>) <what>"`
-  (`std::env::current_exe()`), which never blocks the hook.
+On a transition into `done` or `needs_input` the hook plays the configured
+sound through `afplay`, subject to a per-pane `cooldown_secs` gap and the
+global mute file. It also writes `set-option -p @perch_state <state>` on the
+pane — one spawned `tmux`, never waited on — which costs nothing and lets a
+user put perch's state in a status line they wrote themselves. Subagent events
+are not parent transitions and never cue.
 
-`perch toast` draws one popup per attached client
-(`list-clients -F '#{client_name}'`):
-
-```
-tmux display-popup -c <client> -B -E -x R -y P -w <width> -h 1 -s <style> \
-  -- perch toast-body <kind> <duration_ms> <text> --client <client>
-```
-
-`-B` drops the border and `-x R -y P` pins the box to the bottom-right corner
-of *that* client; the width is the text's unicode display width plus four,
-capped at 60 columns, and a longer message is ellipsized. A second popup on a
-client that already has one replaces it.
-
-`perch toast-body` prints `  <glyph> <text>  `, puts the tty in raw mode and
-waits out `duration_ms`. Two `tmux display-popup -s <dimmer style>` calls from
-*inside* the popup restyle it in place over the last 600 ms — that is the fade.
-If a key arrives first the toast exits immediately and the bytes are forwarded
-verbatim with `send-keys -t <the client's active pane> -l -- <bytes>`, so the
-keystroke that dismissed the toast still reaches the agent.
-
-`[toast]` in the config governs it: `enabled` (default true), `duration_ms`
-(3000), `done_style` and `needs_input_style`. `[notify] desktop` (false) adds
-an `osascript` banner on macOS. Subagent events are not parent transitions and
-never cue. Nothing is written to the window list: perch owns a corner of the
-screen for three seconds and nothing else.
+Under `PERCH_NO_TMUX=1`, `PERCH_TMUX_LOG=<file>` records each invocation as one
+line, which is how the cue is tested.
 
 ## Navigation contract
 

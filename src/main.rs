@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use perch::model::{Harness, State};
 use perch::paths::Paths;
 use perch::setup::{self, SetupOpts, UninstallOpts};
-use perch::{config, hook, install, sound, store, tmux, toast, tui};
+use perch::{config, hook, install, sound, store, tmux, tui};
 
 #[derive(Parser)]
 #[command(
@@ -82,25 +82,6 @@ enum Cmd {
     /// Open the dashboard in a popup on a client.
     Open {
         /// The client to draw on and to move. Pass `#{client_name}`.
-        #[arg(long)]
-        client: Option<String>,
-    },
-    /// Draw a bottom-right toast on every attached client.
-    ///
-    /// `perch toast test` shows a sample so you can check the placement.
-    Toast {
-        /// done | needs_input | test
-        kind: String,
-        /// What it says; defaults to a sample for `test`.
-        text: Vec<String>,
-    },
-    /// The body of a toast popup. Run by `perch toast`, not by hand.
-    #[command(hide = true)]
-    ToastBody {
-        kind: String,
-        duration_ms: u64,
-        text: String,
-        /// The client whose active pane a keystroke is forwarded to.
         #[arg(long)]
         client: Option<String>,
     },
@@ -195,28 +176,6 @@ fn dispatch(cmd: Cmd) -> anyhow::Result<()> {
             tui::run(tmux::current().as_ref(), &client)
         }
         Cmd::Open { client } => cmd_open(client.as_deref()),
-        Cmd::Toast { kind, text } => {
-            let Some(kind) = toast::Kind::parse(&kind) else {
-                anyhow::bail!("unknown toast kind: {kind} (done | needs_input | test)");
-            };
-            let text = if text.is_empty() {
-                "perch toast — this is a sample".to_string()
-            } else {
-                text.join(" ")
-            };
-            toast::show(tmux::current().as_ref(), &config::load(), kind, &text);
-            Ok(())
-        }
-        Cmd::ToastBody {
-            kind,
-            duration_ms,
-            text,
-            client,
-        } => {
-            let kind = toast::Kind::parse(&kind).unwrap_or(toast::Kind::Done);
-            toast::body(kind, duration_ms, &text, client.as_deref());
-            Ok(())
-        }
         Cmd::Sound(SoundCmd::Test { event }) => {
             let cfg = config::load();
             match cfg.sound_for(&event) {

@@ -110,7 +110,6 @@ perch next --client <name>            jump a client to the oldest waiting pane
 perch open --client <name>            open the dashboard in a popup on a client
 perch tui --client <name>             the dashboard itself
 perch sound test <event>              play the sound for done | needs_input | error
-perch toast <kind> [text...]          draw a toast; `perch toast test` shows a sample
 perch seen <pane>                     mark a pane seen: done -> idle
 perch install <claude|codex|pi|tmux> [--dry-run] [--print] [--apply]
 perch setup [--dry-run] [--yes] [--no-tmux] [--only ...]
@@ -130,12 +129,6 @@ perch uninstall [--dry-run] [--keep-state]
 - `open` draws the dashboard as a popup on one client and passes that client's
   name to `perch tui`, which is the only way the popup can know which client to
   move. `prefix + g` runs it for you.
-- `toast` draws one borderless one-line popup in the bottom-right corner of
-  every attached client — green `✓` for `done`, red `⚑` for `needs_input`. It
-  fades out over its last 600 ms and disappears; the first key you press
-  dismisses it *and* is passed through to the pane you were typing at, so it
-  can never eat a character. The hook draws one for you on every transition
-  into `done` or `needs_input`; `perch toast test` shows a sample.
 - `install --dry-run` reports without writing; `--print` writes nothing and
   dumps the merged settings JSON (claude) or the config snippet (tmux) to
   stdout; `--apply` is tmux-only and appends the `source-file` line.
@@ -198,15 +191,11 @@ done = "Glass"
 needs_input = "Ping"
 error = "Basso"
 
-[notify]
-desktop = false       # also post an osascript desktop notification
-
-[toast]
-enabled = true
-duration_ms = 3000
-done_style = "bg=colour28,fg=colour255,bold"
-needs_input_style = "bg=colour160,fg=colour255,bold"
 ```
+
+A sound is the only thing perch does to get your attention: it costs no screen,
+cannot eat a keystroke, and needs no cleanup. The hook also sets the pane
+option `@perch_state`, so you can put perch's state in your own status line.
 
 A bare name resolves to `/System/Library/Sounds/<name>.aiff`; a value
 containing `/` is used as a path. Sounds play only on transitions into `done`
@@ -240,12 +229,6 @@ in the environment disables sound for that process. Then try
 **A pane shows `ended`.** Its tmux pane no longer exists — the shell exited or
 the pane was killed. That is the liveness rule, not a bug; the row disappears
 an hour later, or immediately after `tmux kill-pane` plus a refresh.
-
-**No toast.** Run `perch toast test` — it draws a sample in the bottom-right
-corner of every attached client, so you can check placement without waiting
-for an agent. It needs tmux 3.2 or newer (`display-popup`). Turn toasts off
-with `[toast] enabled = false`, restyle them with `done_style` /
-`needs_input_style`, and add a macOS banner with `[notify] desktop = true`.
 
 **A pane says `needs_input` but nothing is waiting.** That should no longer
 happen: `needs_input` now means only a real approval or question dialog
