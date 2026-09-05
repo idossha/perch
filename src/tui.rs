@@ -22,7 +22,7 @@ use ratatui::{Frame, Terminal};
 use crate::model::{PaneRecord, State, Subagent};
 use crate::sound;
 use crate::store;
-use crate::tmux::Tmux;
+use crate::tmux::{LivePane, Tmux};
 
 // ---------------------------------------------------------------- theme
 
@@ -212,6 +212,9 @@ pub struct Selection {
 
 pub struct App {
     pub records: Vec<PaneRecord>,
+    /// The live tmux panes behind the records, so a row can say where it is
+    /// rather than repeating a `%id` the user has never navigated by.
+    pub live: Vec<LivePane>,
     /// The pane (and child) under the cursor; the row index is derived.
     pub selected: Option<Selection>,
     /// Last row index the cursor sat on, so a vanished pane falls to a
@@ -228,6 +231,9 @@ pub struct App {
     pub theme: Theme,
     /// Refresh counter, drives the working spinner.
     pub tick: u64,
+    /// `PERCH_DEBUG=1`: show the pane id beside the location. Read once, at
+    /// construction, so rendering stays a pure function of the app.
+    pub debug: bool,
 }
 
 impl App {
@@ -235,6 +241,7 @@ impl App {
     pub fn with_records(records: Vec<PaneRecord>) -> Self {
         App {
             records,
+            live: Vec::new(),
             selected: None,
             last_row: 0,
             error: None,
@@ -245,6 +252,7 @@ impl App {
             show_help: false,
             theme: DARK,
             tick: 0,
+            debug: false,
         }
     }
 
@@ -254,6 +262,7 @@ impl App {
         let mut app = App::with_records(records);
         app.muted = sound::is_muted();
         app.theme = load_theme();
+        app.debug = crate::tmux::debug();
         app.grouped = prefs.0;
         app.show_ended = prefs.1;
         app.unwired = if crate::setup::needs_nudge(&paths) {
@@ -488,6 +497,47 @@ impl App {
         self.tick = self.tick.wrapping_add(1);
         self.normalize();
     }
+
+    /// [`App::refresh`] with the pane list that snapshot reconciled against.
+    pub fn refresh_live(&mut self, snap: (Vec<PaneRecord>, Vec<LivePane>)) {
+        self.live = snap.1;
+        self.refresh(snap.0);
+    }
+
+    /// `true` when the live panes span more than one session, which is the
+    /// only time a location needs a `<session>/` prefix to be unambiguous.
+    pub fn multi_session(&self) -> bool {
+        let mut first: Option<&str> = None;
+        for p in &self.live {
+            match first {
+                None => first = Some(&p.session),
+                Some(s) if s != p.session => return true,
+                Some(_) => {}
+            }
+        }
+        false
+    }
+
+    /// Where a record's pane sits in tmux: the live location, else the last
+    /// one the hook stored, else nothing to say.
+    pub fn location_of(&self, rec: &PaneRecord) -> String {
+        if let Some(p) = self.live.iter().find(|p| p.pane == rec.pane) {
+            return p.location(self.multi_session());
+        }
+        rec.location.clone().unwrap_or_else(|| "—".to_string())
+    }
+
+    /// Width of the location column: the widest one, capped so a long window
+    /// name cannot eat the message.
+    fn location_width(&self) -> usize {
+        let w = self
+            .records
+            .iter()
+            .map(|r| self.location_of(r).chars().count())
+            .max()
+            .unwrap_or(0);
+        w.clamp(W_LOC_MIN, W_LOC_MAX) + 2
+    }
 }
 
 // ---------------------------------------------------------------- prefs
@@ -541,7 +591,10 @@ pub fn row_cells(rec: &PaneRecord, now: DateTime<Utc>) -> [String; 6] {
     ]
 }
 
-const W_PANE: usize = 6;
+/// The location column is adaptive: as wide as its widest row, within these
+/// bounds, plus a two-column gap.
+const W_LOC_MIN: usize = 8;
+const W_LOC_MAX: usize = 24;
 const W_PROJECT: usize = 20;
 const W_HARNESS: usize = 10;
 const W_STATE: usize = 13;
@@ -582,6 +635,27 @@ fn one_line(s: &str, w: usize) -> String {
     }
 }
 
+/// A group header: `<project> (<branch>)`, and the branch only when every
+/// member of the group agrees on one — a worktree per branch is common.
+fn group_label(app: &App, project: &str, members: &[usize]) -> String {
+    let mut branch: Option<&str> = None;
+    for i in members {
+        match (
+            branch,
+            app.records[*i].branch.as_deref().filter(|b| !b.is_empty()),
+        ) {
+            (_, None) => return project.to_string(),
+            (None, Some(b)) => branch = Some(b),
+            (Some(a), Some(b)) if a != b => return project.to_string(),
+            (Some(_), Some(_)) => {}
+        }
+    }
+    match branch {
+        Some(b) => format!("{project} ({b})"),
+        None => project.to_string(),
+    }
+}
+
 fn counts_label(app: &App, members: &[usize]) -> String {
     let mut parts = Vec::new();
     for st in [
@@ -603,12 +677,12 @@ fn counts_label(app: &App, members: &[usize]) -> String {
     parts.join(" ")
 }
 
-fn header_line(theme: &Theme, msg_w: usize) -> Line<'static> {
+fn header_line(theme: &Theme, loc_w: usize, project_w: usize, msg_w: usize) -> Line<'static> {
     let dim = Style::default().fg(theme.dim).add_modifier(Modifier::DIM);
     let text = format!(
         "  {}{}{}{}{:>aw$} {}",
-        fit("pane", W_PANE),
-        fit("project", W_PROJECT),
+        fit("location", loc_w),
+        fit("project", project_w),
         fit("harness", W_HARNESS),
         fit("state", W_STATE),
         "age",
@@ -623,6 +697,8 @@ fn pane_line(
     i: usize,
     selected: bool,
     now: DateTime<Utc>,
+    loc_w: usize,
+    project_w: usize,
     msg_w: usize,
 ) -> Line<'static> {
     let rec = &app.records[i];
@@ -652,10 +728,22 @@ fn pane_line(
         ),
         rec.state.as_str()
     );
-    Line::from(vec![
+    let mut spans = vec![
         Span::styled(marker.to_string(), Style::default().fg(t.accent)),
-        Span::styled(fit(&rec.pane, W_PANE), sel),
-        Span::styled(fit(&project_of(rec), W_PROJECT), sel),
+        Span::styled(fit(&app.location_of(rec), loc_w), sel),
+    ];
+    // The pane id is the internal key, not something a user navigates by; it
+    // is on screen only when they asked to debug.
+    if app.debug {
+        spans.push(Span::styled(
+            format!("{} ", rec.pane),
+            Style::default().fg(t.dim).add_modifier(Modifier::DIM),
+        ));
+    }
+    if project_w > 0 {
+        spans.push(Span::styled(fit(&project_of(rec), project_w), sel));
+    }
+    spans.extend([
         Span::styled(fit(&harness, W_HARNESS), Style::default().fg(t.dim)),
         Span::styled(fit(&state_txt, W_STATE), t.state_style(rec.state)),
         Span::styled(
@@ -670,7 +758,8 @@ fn pane_line(
             one_line(rec.last_message.as_deref().unwrap_or(""), msg_w),
             Style::default().fg(t.text),
         ),
-    ])
+    ]);
+    Line::from(spans)
 }
 
 fn child_line(
@@ -679,6 +768,7 @@ fn child_line(
     ci: usize,
     selected: bool,
     now: DateTime<Utc>,
+    label_w: usize,
     msg_w: usize,
 ) -> Line<'static> {
     let kid = &app.records[i].children[ci];
@@ -700,7 +790,7 @@ fn child_line(
     };
     Line::from(vec![
         Span::styled(marker.to_string(), Style::default().fg(t.accent)),
-        Span::styled(fit(&label, W_PANE + W_PROJECT + W_HARNESS), lstyle),
+        Span::styled(fit(&label, label_w), lstyle),
         Span::styled(
             fit(
                 &format!("{} {}", state_glyph(kid.state, 0), kid.state.as_str()),
@@ -868,12 +958,16 @@ pub fn render(f: &mut Frame, app: &App, now: DateTime<Utc>) {
     }
 
     let inner_w = areas[1].width.saturating_sub(2) as usize;
-    let fixed = 2 + W_PANE + W_PROJECT + W_HARNESS + W_STATE + W_AGE + 1;
+    let loc_w = app.location_width();
+    // Grouped rows sit under a `▸ project (branch)` header, so repeating the
+    // project on every row says nothing; flat rows still need it.
+    let project_w = if app.grouped { 0 } else { W_PROJECT };
+    let fixed = 2 + loc_w + project_w + W_HARNESS + W_STATE + W_AGE + 1;
     let msg_w = inner_w.saturating_sub(fixed).max(1);
 
     let rows = app.rows();
     let cursor_row = app.cursor_row(&rows);
-    let mut lines: Vec<Line> = vec![header_line(t, msg_w)];
+    let mut lines: Vec<Line> = vec![header_line(t, loc_w, project_w, msg_w)];
     if rows.is_empty() {
         lines.push(Line::from(Span::styled(
             "  no agents yet — start claude/codex/pi in a tmux pane",
@@ -885,13 +979,21 @@ pub fn render(f: &mut Frame, app: &App, now: DateTime<Utc>) {
         lines.push(match row {
             RowKind::Header { project, members } => Line::from(vec![
                 Span::styled(
-                    format!("▸ {project}  "),
+                    format!("▸ {}  ", group_label(app, project, members)),
                     Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(counts_label(app, members), Style::default().fg(t.dim)),
             ]),
-            RowKind::Pane(i) => pane_line(app, *i, selected, now, msg_w),
-            RowKind::Child(i, ci) => child_line(app, *i, *ci, selected, now, msg_w),
+            RowKind::Pane(i) => pane_line(app, *i, selected, now, loc_w, project_w, msg_w),
+            RowKind::Child(i, ci) => child_line(
+                app,
+                *i,
+                *ci,
+                selected,
+                now,
+                loc_w + project_w + W_HARNESS,
+                msg_w,
+            ),
             RowKind::EndedNote(k) => Line::from(Span::styled(
                 format!("  {k} ended, press e to show"),
                 Style::default().fg(t.ended).add_modifier(Modifier::DIM),
@@ -1029,8 +1131,8 @@ impl Nav {
 
 /// Run the dashboard until the user quits or jumps.
 pub fn run(tmux: &dyn Tmux, client: &str) -> Result<()> {
-    let mut app = App::new(store::snapshot(tmux));
-    app.normalize();
+    let mut app = App::new(Vec::new());
+    app.refresh_live(store::snapshot_with_live(tmux));
 
     enable_raw_mode()?;
     let mut out = io::stdout();
@@ -1101,7 +1203,7 @@ fn event_loop<B: Backend>(
                                 r.state = State::Idle;
                                 r.since = store::now_rfc3339();
                                 let _ = store::save(&r);
-                                app.refresh(store::snapshot(tmux));
+                                app.refresh_live(store::snapshot_with_live(tmux));
                             }
                         }
                     }
@@ -1116,7 +1218,7 @@ fn event_loop<B: Backend>(
                         } else {
                             Vec::new()
                         };
-                        app.refresh(store::snapshot(tmux));
+                        app.refresh_live(store::snapshot_with_live(tmux));
                     }
                     KeyCode::Char('r') => app.refresh(store::snapshot(tmux)),
                     KeyCode::Enter => {
@@ -1127,7 +1229,7 @@ fn event_loop<B: Backend>(
                                 Ok(()) => return Ok(()),
                                 Err(msg) => {
                                     app.error = Some(msg);
-                                    app.refresh(store::snapshot(tmux));
+                                    app.refresh_live(store::snapshot_with_live(tmux));
                                 }
                             }
                         }
@@ -1137,7 +1239,7 @@ fn event_loop<B: Backend>(
             }
         }
         if last_refresh.elapsed() >= Duration::from_secs(1) {
-            app.refresh(store::snapshot(tmux));
+            app.refresh_live(store::snapshot_with_live(tmux));
             app.muted = sound::is_muted();
             last_refresh = Instant::now();
         }

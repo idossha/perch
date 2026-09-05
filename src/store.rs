@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 
 use crate::model::{PaneRecord, State};
-use crate::tmux::Tmux;
+use crate::tmux::{LivePane, Tmux};
 
 const EVENTS_MAX_BYTES: u64 = 5 * 1024 * 1024;
 /// Records whose pane is gone are pruned once they are this old.
@@ -102,7 +102,16 @@ pub fn remove(pane: &str) {
 ///
 /// Sorted by state rank then by `since` ascending (oldest waiting first).
 pub fn snapshot(tmux: &dyn Tmux) -> Vec<PaneRecord> {
-    let live: Vec<String> = tmux.list_panes().into_iter().map(|p| p.pane).collect();
+    snapshot_with_live(tmux).0
+}
+
+/// [`snapshot`] plus the live pane list it reconciled against.
+///
+/// The TUI needs both: the records to render, and the panes to turn a pane id
+/// into the tmux location a user actually navigates by. One `list-panes`.
+pub fn snapshot_with_live(tmux: &dyn Tmux) -> (Vec<PaneRecord>, Vec<LivePane>) {
+    let panes = tmux.list_panes();
+    let live: Vec<String> = panes.iter().map(|p| p.pane.clone()).collect();
     let before = load_all();
     let states_before: Vec<(String, State)> =
         before.iter().map(|r| (r.pane.clone(), r.state)).collect();
@@ -118,7 +127,7 @@ pub fn snapshot(tmux: &dyn Tmux) -> Vec<PaneRecord> {
             Some(_) => {}
         }
     }
-    after
+    (after, panes)
 }
 
 /// Pure part of [`snapshot`], so liveness is testable with an injected pane list.

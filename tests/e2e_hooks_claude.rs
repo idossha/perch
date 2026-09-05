@@ -40,6 +40,16 @@ fn claude_hooks_drive_state_through_a_real_server() {
     assert_eq!(s.state_of(&a), "idle");
     assert_pane_state(&s, &a, "idle");
 
+    // The hook records where the pane was, so an ended row can still say so.
+    let loc = s.records().as_array().unwrap()[0]["location"].clone();
+    assert_eq!(
+        loc.as_str(),
+        Some(
+            s.tmux_out(&["display", "-p", "-t", &a, "#{window_name}"])
+                .as_str()
+        )
+    );
+
     s.hook(&a, "claude", &f("user_prompt_submit.json"));
     assert_eq!(s.state_of(&a), "working");
     assert_pane_state(&s, &a, "working");

@@ -3,6 +3,7 @@
 use chrono::{Duration, Utc};
 use crossterm::event::KeyCode;
 use perch::model::{Harness, PaneRecord, State, Subagent};
+use perch::tmux::LivePane;
 use perch::tui::{render, App, Nav, RowKind, Selection, LIGHT};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
@@ -15,6 +16,21 @@ fn rec(pane: &str, project: &str, state: State, age_secs: i64, msg: &str) -> Pan
     r.project = Some(project.into());
     r.last_message = Some(msg.into());
     r
+}
+
+/// One live tmux pane, as `list-panes` would report it.
+fn live(pane: &str, session: &str, window_name: &str, index: u32, panes: u32) -> LivePane {
+    LivePane {
+        pane: pane.into(),
+        session: session.into(),
+        window: "0".into(),
+        window_name: window_name.into(),
+        pane_index: index,
+        window_panes: panes,
+        session_attached: true,
+        command: "claude".into(),
+        pid: None,
+    }
 }
 
 fn kid(id: &str, agent_type: Option<&str>, state: State, msg: &str) -> Subagent {
@@ -52,7 +68,11 @@ fn board() -> App {
         rec("%4", "duet", State::Idle, 900, ""),
         rec("%5", "quill", State::Ended, 60, "bye"),
     ];
-    App::with_records(records)
+    let mut app = App::with_records(records);
+    app.live = (1..=5)
+        .map(|n| live(&format!("%{n}"), "main", &format!("w{n}"), 0, 1))
+        .collect();
+    app
 }
 
 #[test]
@@ -113,14 +133,16 @@ fn grouping_toggles_to_flat_newest_first() {
     app.grouped = false;
     let out = lines(&app);
     assert!(!out.iter().any(|l| l.contains('▸')));
-    let panes: Vec<&String> = out
+    let rows: Vec<&String> = out
         .iter()
-        .filter(|l| l.contains("%1") || l.contains("%2") || l.contains("%3") || l.contains("%4"))
+        .filter(|l| ["w1", "w2", "w3", "w4"].iter().any(|w| l.contains(w)))
         .collect();
     // Newest state change first: %3 (5s), %2 (30s), %1 (2m), %4 (15m).
-    assert!(panes[0].contains("%3"), "{panes:?}");
-    assert!(panes[1].contains("%2"), "{panes:?}");
-    assert!(panes[3].contains("%4"), "{panes:?}");
+    assert!(rows[0].contains("w3"), "{rows:?}");
+    assert!(rows[1].contains("w2"), "{rows:?}");
+    assert!(rows[3].contains("w4"), "{rows:?}");
+    // Flat rows carry the project, since there is no group header to say it.
+    assert!(rows[0].contains("perch"), "{rows:?}");
 }
 
 #[test]
@@ -468,13 +490,7 @@ fn enter_switches_the_named_client_to_the_pane_id() {
     std::env::set_var("PERCH_STATE_DIR", dir.path());
 
     let tmux = perch::tmux::NullTmux {
-        panes: vec![perch::tmux::LivePane {
-            pane: "%7".into(),
-            session: "other".into(),
-            window: "3".into(),
-            command: "claude".into(),
-            pid: None,
-        }],
+        panes: vec![live("%7", "other", "editor", 0, 1)],
     };
     assert_eq!(perch::tui::jump_to(&tmux, "/dev/ttys004", "%7"), Ok(()));
     let body = std::fs::read_to_string(&log).unwrap();
@@ -491,4 +507,120 @@ fn enter_switches_the_named_client_to_the_pane_id() {
         perch::tui::jump_to(&tmux, "/dev/ttys004", "%99"),
         Err("pane %99 is gone".to_string())
     );
+}
+
+// ------------------------------------------------------------- location
+
+/// Rows say where the pane is on the tmux top rail. A `%444` is perch's key,
+/// not something the user has ever navigated by, so it stays off the screen.
+#[test]
+fn rows_show_the_window_name_and_never_a_pane_id() {
+    let app = board();
+    let out = lines(&app).join("\n");
+    assert!(out.contains("location"), "no location header:\n{out}");
+    assert!(!out.contains("pane    "), "old pane header:\n{out}");
+    for w in ["w1", "w2", "w3", "w4"] {
+        assert!(out.contains(w), "missing window {w}:\n{out}");
+    }
+    assert!(!out.contains('%'), "a pane id reached the screen:\n{out}");
+}
+
+/// A location only carries what it needs to be unambiguous.
+#[test]
+fn the_session_prefix_appears_only_with_more_than_one_session() {
+    let mut app = board();
+    assert!(lines(&app).join("\n").contains(" w1"));
+    assert!(!lines(&app).join("\n").contains("main/w1"));
+
+    app.live[0] = live("%1", "other", "w1", 0, 1);
+    assert!(
+        lines(&app).join("\n").contains("other/w1"),
+        "{:?}",
+        lines(&app)
+    );
+}
+
+#[test]
+fn the_pane_index_appears_only_in_a_split_window() {
+    let mut app = board();
+    assert!(!lines(&app).join("\n").contains("w1."));
+    app.live[0] = live("%1", "main", "w1", 2, 3);
+    assert!(lines(&app).join("\n").contains("w1.2"), "{:?}", lines(&app));
+}
+
+/// A pane tmux no longer knows about falls back to the location the hook
+/// stored, and to an em dash when there is none.
+#[test]
+fn an_ended_pane_shows_its_last_known_location() {
+    let mut app = board();
+    app.show_ended = true;
+    app.live.clear();
+    app.records[4].location = Some("gone-window".into());
+    let out = lines(&app).join("\n");
+    assert!(out.contains("gone-window"), "{out}");
+    assert!(
+        out.contains('—'),
+        "no placeholder for an unknown location:\n{out}"
+    );
+}
+
+/// Under a `▸ project` header the project on every row is noise.
+#[test]
+fn grouped_rows_drop_the_project_column() {
+    let app = board();
+    let out = lines(&app);
+    let row = out
+        .iter()
+        .find(|l| l.contains("wrote the reducer"))
+        .expect("the done row");
+    assert!(row.contains("w1"), "{row}");
+    assert!(
+        !row.contains("perch"),
+        "the project is repeated on the row:\n{row}"
+    );
+    // ... and the header carries the project with its branch.
+    assert!(out.iter().any(|l| l.contains("▸ perch")), "{out:?}");
+}
+
+#[test]
+fn a_group_header_carries_the_branch_when_the_group_agrees() {
+    let mut app = board();
+    for r in app
+        .records
+        .iter_mut()
+        .filter(|r| r.project.as_deref() == Some("perch"))
+    {
+        r.branch = Some("main".into());
+    }
+    assert!(
+        lines(&app).iter().any(|l| l.contains("▸ perch (main)")),
+        "{:?}",
+        lines(&app)
+    );
+
+    // Two branches in one project: the header says the project only.
+    app.records[1].branch = Some("wip".into());
+    let out = lines(&app);
+    assert!(out.iter().any(|l| l.contains("▸ perch  ")), "{out:?}");
+    assert!(!out.iter().any(|l| l.contains("(main)")), "{out:?}");
+}
+
+/// The pane id is still reachable, but only when the user asked for it.
+#[test]
+fn perch_debug_appends_the_pane_id() {
+    let mut app = board();
+    app.debug = true;
+    let out = lines(&app).join("\n");
+    assert!(out.contains("%1"), "{out}");
+}
+
+/// A long window name is capped rather than eating the message column.
+#[test]
+fn the_location_column_is_adaptive_and_capped() {
+    let mut app = App::with_records(vec![rec("%1", "perch", State::Working, 1, "hello there")]);
+    app.live = vec![live("%1", "main", &"n".repeat(60), 0, 1)];
+    app.normalize();
+    let out = lines(&app).join("\n");
+    assert!(out.contains("hello there"), "message lost:\n{out}");
+    assert!(out.contains('…'), "location not ellipsized:\n{out}");
 }

@@ -15,7 +15,7 @@ fn the_tui_renders_the_seeded_rows_in_a_real_pane() {
     }
     let s = Server::start();
     let a = s.pane_of("one:0");
-    let b = s.new_window("one", "beta");
+    let b = s.new_window("one", "editor");
     let host = s.new_shell_window("one", "host");
     let client = s.attach("one");
 
@@ -51,6 +51,16 @@ fn the_tui_renders_the_seeded_rows_in_a_real_pane() {
     let screen = s.capture(&host);
     // Column header, group headers, state glyphs, one-line footer.
     assert!(screen.contains("last message"), "{screen}");
+    // Rows say where the pane is on the top rail, not its `%id`.
+    assert!(screen.contains("location"), "{screen}");
+    assert!(
+        screen.contains("editor"),
+        "the real window name is missing:\n{screen}"
+    );
+    assert!(
+        !screen.contains('%'),
+        "a pane id reached the screen:\n{screen}"
+    );
     assert!(
         screen.contains("▸ alpha"),
         "grouping header missing:\n{screen}"

@@ -38,9 +38,21 @@ pub fn run(harness: Harness) -> anyhow::Result<()> {
     let mut rec = existing.unwrap_or_else(|| PaneRecord::new(&pane, harness, &now));
     rec.harness = harness;
     // Only a Stop asks tmux where the user is looking; it is the one event
-    // whose meaning depends on it, and the answer costs a round trip.
-    let focused = matches!(parsed.event, crate::model::Event::Stop { .. })
-        && tmux::current().pane_focused(&pane);
+    // whose meaning depends on it, and the answer costs a round trip. That
+    // same round trip also returns the pane's tmux location, so the record
+    // remembers where it was once the pane is gone. A pane perch has not
+    // located yet pays for one lookup of its own, and never again.
+    let t = tmux::current();
+    let (focused, location) = if matches!(parsed.event, crate::model::Event::Stop { .. }) {
+        t.pane_info(&pane)
+    } else if rec.location.is_none() {
+        (false, t.pane_location(&pane))
+    } else {
+        (false, None)
+    };
+    if location.is_some() {
+        rec.location = location;
+    }
     let applied = reducer::apply_with(&mut rec, &parsed, &now, focused);
     let changed = applied.parent_changed;
 

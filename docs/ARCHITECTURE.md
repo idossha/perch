@@ -94,9 +94,10 @@ events.jsonl.1        the previous log, rotated at 5 MB
 mute                  presence = globally muted
 ```
 
-A record is `{pane, harness, session_id, cwd, project, branch, state, since,
-last_message, title, pid, last_sound_ms}`. Unknown or missing fields default,
-so an old record still loads; an unparseable one is skipped rather than fatal.
+A record is `{pane, harness, session_id, cwd, project, branch, location, state,
+since, last_message, title, pid, last_sound_ms}`. Unknown or missing fields
+default, so an old record still loads; an unparseable one is skipped rather
+than fatal.
 
 Config lives separately in `~/.config/perch/config.toml`
 (`PERCH_CONFIG_DIR`), next to the generated `perch.tmux.conf`.
@@ -178,6 +179,19 @@ never moves the selection to another pane; if the selected pane disappears the
 cursor falls to the nearest row. `App::jump_target()` returns the pane id for
 the selection, resolving a subagent row to its parent pane.
 
+**Rows say where the pane is, not which pane it is.** A `%444` is perch's
+internal key — for the selection, for the jump, for the file name — and a user
+has never navigated by it; they navigate by the window names on the tmux top
+rail. So the first column is a location: `<window_name>`, prefixed
+`<session>/` only when the live panes span more than one session and suffixed
+`.<pane_index>` only when that window is split. A pane tmux no longer knows
+about falls back to `PaneRecord::location`, which the hook stores from the same
+`display -p` round trip it already pays for on a `Stop` (and once, on its own,
+for a pane it has not located yet); failing that, `—`. Grouped rows drop the
+project column entirely — the `▸ <project> (<branch>)` header above them
+already says it. The pane id is in `perch list --json` and, under
+`PERCH_DEBUG=1`, dim beside the location.
+
 **Keys never overload each other.** `tui::Nav` owns the cursor and view keys
 and the single piece of state they need — a pending `g`. `gg` (a second `g`
 within `GG_WINDOW`, 500 ms) goes to the first row, `G` to the last, `v` toggles
@@ -229,10 +243,15 @@ There is no process watching for exits, so liveness is computed on every read.
 `store::snapshot` runs
 
 ```
-tmux list-panes -a -F '#{pane_id} #{session_name} #{window_index} #{pane_current_command} #{pane_pid}'
+tmux list-panes -a -F '#{pane_id} #{session_name} #{window_index} #{pane_index} #{window_panes} #{session_attached} #{pane_current_command} #{pane_pid} #{window_name}'
 ```
 
-and reconciles: a record whose pane id is not in that list becomes `ended` with
+`#{window_name}` trails because it is the one field a user can put spaces in,
+so `parse_pane_line` takes it as the rest of the line. `snapshot_with_live`
+returns that pane list alongside the records; the TUI keeps it, because a row's
+location is a fact about tmux now, not about the record.
+
+It reconciles: a record whose pane id is not in that list becomes `ended` with
 a fresh `since`; a record already `ended` for more than one hour is dropped and
 its file deleted. The pure half, `store::reconcile(records, live_ids, now)`,
 does no I/O and is unit-tested with an injected pane list. If the tmux call

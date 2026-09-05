@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Rows show the tmux location instead of the pane id.** The board's first
+  column is now the window name a user actually navigates by — with
+  `session/` in front only when more than one session is on the board, and
+  `.N` after it only when the window is split — instead of a `%444` that means
+  nothing outside perch. Grouped rows no longer repeat the project under their
+  own `▸ project (branch)` header, and an `ended` pane still says where it
+  was. The pane id remains in `perch list --json` and appears on screen only
+  under `PERCH_DEBUG=1`.
 - **`gg` and `G` are plain vim now, and `v` toggles the view.** `g` used to
   both toggle grouped/flat and start `gg`, so going to the top of the board
   also flipped the layout under you. `gg` (a second `g` within 500 ms) goes to
@@ -63,7 +71,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the most urgent group first, a glyph plus a colour per state, `ended` panes
   collapsed behind a footer count, and indented rows for a pane's subagents —
   `j`/`k` move, `Enter` jumps (a subagent jumps to its parent pane), `n` next
-  waiting, `m` mute, `x` dismiss, `e` show/hide ended, `g` grouped/flat,
+  waiting, `m` mute, `x` dismiss, `e` show/hide ended, `v` grouped/flat,
   `?` key help, `r` refresh, `q` quit. `dark` and `light` palettes, chosen with
   `PERCH_THEME` or `[tui] theme`.
 - `perch list [--json]`, `perch status [--format plain|tmux]` for the tmux

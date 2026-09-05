@@ -137,6 +137,10 @@ perch uninstall [--dry-run] [--keep-state]
 
 Run it from the popup binding (`prefix + g`) or directly with
 `perch open --client "$(tmux display -p '#{client_name}')"`.
+Each row's first column is where the pane is in tmux — the window name, with
+`session/` in front when more than one session is on the board and `.N` after
+it when the window is split — not its `%id`, which perch uses internally and
+shows only in `perch list --json` and under `PERCH_DEBUG=1`.
 Rows are grouped by project, the groups ordered by urgency, and each state has
 a glyph as well as a colour so the board reads without colour: `⚑` needs_input,
 `✓` done, `▶` working, `…` starting, `·` idle, `✕` ended. Ended panes are

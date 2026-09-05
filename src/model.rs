@@ -152,6 +152,11 @@ pub struct PaneRecord {
     pub project: Option<String>,
     #[serde(default)]
     pub branch: Option<String>,
+    /// Where the pane was in tmux the last time the hook looked: the window
+    /// name, with `.<pane_index>` when the window was split. Kept so an
+    /// `ended` row can still say where it used to live.
+    #[serde(default)]
+    pub location: Option<String>,
     pub state: State,
     /// RFC3339 timestamp of the last state change.
     pub since: String,
@@ -193,6 +198,7 @@ impl PaneRecord {
             cwd: None,
             project: None,
             branch: None,
+            location: None,
             state: State::Starting,
             since: now.to_string(),
             last_message: None,
