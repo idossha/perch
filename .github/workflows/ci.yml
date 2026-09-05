@@ -1,0 +1,63 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # perch must never touch the runner's audio or tmux: no afplay to spawn, and
+  # no tmux server, so every tmux-dependent path takes the NullTmux branch.
+  PERCH_NO_SOUND: "1"
+  PERCH_NO_TMUX: "1"
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    # Formatting and clippy on a warm cache take under two minutes; ten is
+    # generous enough for a cold toolchain download and short enough that a
+    # hung rustc does not hold a runner for six hours.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+      - name: cargo clippy -D warnings
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Linux is the cheap leg; macOS is the platform perch actually targets
+        # (afplay, osascript, /System/Library/Sounds), so it must stay green.
+        os: [ubuntu-latest, macos-latest]
+    # A full cold build of the dependency tree plus the suite is ~5 minutes on
+    # Linux and slower on macOS runners; twenty leaves headroom without letting
+    # a deadlocked test (a TUI event loop that never returns) run indefinitely.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo build
+        run: cargo build --all-targets --locked
+      - name: cargo test
+        # Redundant with the workflow-level env, but stated here so the guard
+        # is visible at the step that depends on it.
+        env:
+          PERCH_NO_SOUND: "1"
+          PERCH_NO_TMUX: "1"
+        run: cargo test --all-features --locked
