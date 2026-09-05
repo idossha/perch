@@ -61,9 +61,7 @@ pub fn config_dir() -> PathBuf {
             return PathBuf::from(d);
         }
     }
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".config/perch")
+    crate::paths::home().join(".config/perch")
 }
 
 pub fn config_path() -> PathBuf {

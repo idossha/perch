@@ -19,8 +19,7 @@ pub fn state_dir() -> PathBuf {
             return PathBuf::from(d);
         }
     }
-    let base = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    base.join(".local/state/perch")
+    crate::paths::home().join(".local/state/perch")
 }
 
 pub fn panes_dir() -> PathBuf {

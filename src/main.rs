@@ -4,6 +4,8 @@ use chrono::Utc;
 use clap::{Parser, Subcommand, ValueEnum};
 
 use perch::model::{Harness, State};
+use perch::paths::Paths;
+use perch::setup::{self, SetupOpts, UninstallOpts};
 use perch::{config, hook, install, sound, store, tmux, tui};
 
 #[derive(Parser)]
@@ -82,6 +84,34 @@ enum Cmd {
         #[arg(long)]
         apply: bool,
     },
+    /// Detect every installed harness and wire perch into all of them.
+    Setup {
+        /// Report what would change without writing anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Accepted for scripts; setup never prompts.
+        #[arg(long, short = 'y')]
+        yes: bool,
+        /// Leave tmux alone.
+        #[arg(long)]
+        no_tmux: bool,
+        /// Restrict to these components (claude,codex,pi,tmux).
+        #[arg(long, value_delimiter = ',')]
+        only: Vec<String>,
+    },
+    /// Report what is installed, wired and reachable.
+    Doctor {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove everything perch installed.
+    Uninstall {
+        #[arg(long)]
+        dry_run: bool,
+        /// Keep the state directory.
+        #[arg(long)]
+        keep_state: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -111,8 +141,14 @@ fn main() -> ExitCode {
 fn dispatch(cmd: Cmd) -> anyhow::Result<()> {
     match cmd {
         Cmd::Hook { .. } => unreachable!("handled in main"),
-        Cmd::List { json } => cmd_list(json),
-        Cmd::Status { format } => cmd_status(format),
+        Cmd::List { json } => {
+            nudge_stderr();
+            cmd_list(json)
+        }
+        Cmd::Status { format } => {
+            nudge_stderr();
+            cmd_status(format)
+        }
         Cmd::Next => cmd_next(),
         Cmd::Tui => tui::run(tmux::current().as_ref()),
         Cmd::Sound(SoundCmd::Test { event }) => {
@@ -125,6 +161,39 @@ fn dispatch(cmd: Cmd) -> anyhow::Result<()> {
                 }
                 None => anyhow::bail!("unknown event: {event} (done | needs_input | error)"),
             }
+        }
+        Cmd::Setup {
+            dry_run,
+            yes: _,
+            no_tmux,
+            only,
+        } => {
+            let paths = Paths::from_env();
+            let report = setup::run(
+                &paths,
+                &SetupOpts {
+                    dry_run,
+                    no_tmux,
+                    only,
+                },
+            )?;
+            print!("{report}");
+            Ok(())
+        }
+        Cmd::Doctor { json } => cmd_doctor(json),
+        Cmd::Uninstall {
+            dry_run,
+            keep_state,
+        } => {
+            let report = setup::uninstall(
+                &Paths::from_env(),
+                &UninstallOpts {
+                    dry_run,
+                    keep_state,
+                },
+            )?;
+            print!("{report}");
+            Ok(())
         }
         Cmd::Install {
             target,
@@ -141,6 +210,31 @@ fn dispatch(cmd: Cmd) -> anyhow::Result<()> {
             print!("{report}");
             Ok(())
         }
+    }
+}
+
+/// One-line hint on stderr; stdout belongs to the tmux status line.
+fn nudge_stderr() {
+    let paths = Paths::from_env();
+    if setup::needs_nudge(&paths) {
+        eprintln!(
+            "perch: not wired into {}: run `perch setup`",
+            setup::unwired_harnesses(&paths).join(", ")
+        );
+    }
+}
+
+fn cmd_doctor(json: bool) -> anyhow::Result<()> {
+    let d = setup::doctor(&Paths::from_env());
+    if json {
+        println!("{}", serde_json::to_string_pretty(&d)?);
+    } else {
+        print!("{}", setup::doctor_text(&d));
+    }
+    if d.ok() {
+        Ok(())
+    } else {
+        anyhow::bail!("unwired: {}", d.unwired.join(", "))
     }
 }
 
