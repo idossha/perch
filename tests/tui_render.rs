@@ -1,8 +1,8 @@
 //! Offscreen TUI test: no terminal is opened, only ratatui's TestBackend.
 
 use chrono::{Duration, Utc};
-use perch::model::{Harness, PaneRecord, State};
-use perch::tui::{render, App};
+use perch::model::{Harness, PaneRecord, State, Subagent};
+use perch::tui::{render, App, RowKind, LIGHT};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 
@@ -15,9 +15,19 @@ fn rec(pane: &str, project: &str, state: State, age_secs: i64, msg: &str) -> Pan
     r
 }
 
-/// Trimmed text of each rendered row.
+fn kid(id: &str, agent_type: Option<&str>, state: State, msg: &str) -> Subagent {
+    Subagent {
+        id: id.into(),
+        agent_type: agent_type.map(String::from),
+        state,
+        since: Utc::now().to_rfc3339(),
+        last_message: Some(msg.into()),
+    }
+}
+
+/// Trimmed text of each rendered line.
 fn lines(app: &App) -> Vec<String> {
-    let mut term = Terminal::new(TestBackend::new(90, 12)).unwrap();
+    let mut term = Terminal::new(TestBackend::new(110, 20)).unwrap();
     let now = Utc::now();
     term.draw(|f| render(f, app, now)).unwrap();
     let buf = term.backend().buffer().clone();
@@ -32,86 +42,194 @@ fn lines(app: &App) -> Vec<String> {
         .collect()
 }
 
-fn sorted_app() -> App {
-    // The store hands the TUI records already sorted; mirror that here.
-    let mut records = vec![
+fn board() -> App {
+    let records = vec![
         rec("%2", "luna", State::NeedsInput, 30, "approve git push?"),
         rec("%1", "perch", State::Done, 120, "wrote the reducer"),
-        rec("%3", "quill", State::Working, 5, "editing"),
+        rec("%3", "perch", State::Working, 5, "editing\nsecond line"),
         rec("%4", "duet", State::Idle, 900, ""),
+        rec("%5", "quill", State::Ended, 60, "bye"),
     ];
-    records.sort_by_key(|r| r.state.rank());
-    App {
-        records,
-        selected: 0,
-        muted: false,
-        unwired: Vec::new(),
+    App::with_records(records)
+}
+
+#[test]
+fn every_state_renders_its_glyph_and_name() {
+    let mut app = board();
+    app.show_ended = true;
+    let joined = lines(&app).join("\n");
+    for (glyph, name) in [
+        ("⚑", "needs_input"),
+        ("✓", "done"),
+        ("▶", "working"),
+        ("·", "idle"),
+        ("✕", "ended"),
+    ] {
+        assert!(
+            joined.contains(&format!("{glyph} {name}")),
+            "missing {glyph} {name}:\n{joined}"
+        );
     }
 }
 
 #[test]
-fn header_and_rows_render_in_state_order() {
-    let out = lines(&sorted_app());
-    let joined = out.join("\n");
-    assert!(joined.contains("perch"), "title:\n{joined}");
+fn ended_rows_are_hidden_until_e() {
+    let app = board();
+    let out = lines(&app).join("\n");
+    assert!(!out.contains("✕ ended"), "{out}");
+    assert!(out.contains("1 ended, press e to show"), "{out}");
 
-    let header = out
+    let mut app = board();
+    app.show_ended = true;
+    let out = lines(&app).join("\n");
+    assert!(out.contains("✕ ended"), "{out}");
+    assert!(!out.contains("press e to show"), "{out}");
+}
+
+#[test]
+fn group_headers_are_ordered_by_urgency_with_counts() {
+    let app = board();
+    let out = lines(&app);
+    let heads: Vec<&String> = out.iter().filter(|l| l.contains('▸')).collect();
+    let names: Vec<String> = heads
         .iter()
-        .position(|l| l.contains("pane") && l.contains("harness"));
-    assert!(header.is_some(), "no header row:\n{joined}");
-    let h = header.unwrap();
-
-    // Rows follow the header, one per record, in needs_input/done/working/idle order.
-    let expect = [
-        ("%2", "luna", "needs_input", "30s", "approve git push?"),
-        ("%1", "perch", "done", "2m", "wrote the reducer"),
-        ("%3", "quill", "working", "5s", "editing"),
-        ("%4", "duet", "idle", "15m", ""),
-    ];
-    for (i, (pane, project, state, age, msg)) in expect.iter().enumerate() {
-        let row = &out[h + 1 + i];
-        assert!(row.contains(pane), "row {i} missing {pane}: {row}");
-        assert!(row.contains(project), "row {i} missing {project}: {row}");
-        assert!(row.contains(state), "row {i} missing {state}: {row}");
-        assert!(row.contains(age), "row {i} missing age {age}: {row}");
-        assert!(row.contains(msg), "row {i} missing message: {row}");
-    }
+        .map(|l| l.trim_matches(|c| c == '│' || c == ' ').to_string())
+        .collect();
+    assert_eq!(names.len(), 3, "{names:?}");
+    assert!(names[0].starts_with("▸ luna"), "{names:?}"); // needs_input
+    assert!(names[1].starts_with("▸ perch"), "{names:?}"); // done + working
+    assert!(names[2].starts_with("▸ duet"), "{names:?}"); // idle
+    assert!(
+        names[1].contains("✓1") && names[1].contains("▶1"),
+        "{names:?}"
+    );
 }
 
 #[test]
-fn footer_shows_the_keys_and_mute_state() {
-    let out = lines(&sorted_app());
-    let footer = out.last().unwrap();
-    assert!(footer.contains("Enter jump"), "{footer}");
-    assert!(footer.contains("sound on"), "{footer}");
-
-    let mut app = sorted_app();
-    app.muted = true;
-    assert!(lines(&app).last().unwrap().contains("muted"));
+fn grouping_toggles_to_flat_newest_first() {
+    let mut app = board();
+    app.grouped = false;
+    let out = lines(&app);
+    assert!(!out.iter().any(|l| l.contains('▸')));
+    let panes: Vec<&String> = out
+        .iter()
+        .filter(|l| l.contains("%1") || l.contains("%2") || l.contains("%3") || l.contains("%4"))
+        .collect();
+    // Newest state change first: %3 (5s), %2 (30s), %1 (2m), %4 (15m).
+    assert!(panes[0].contains("%3"), "{panes:?}");
+    assert!(panes[1].contains("%2"), "{panes:?}");
+    assert!(panes[3].contains("%4"), "{panes:?}");
 }
 
 #[test]
-fn selection_wraps_and_next_waiting_picks_the_first_flag() {
-    let mut app = sorted_app();
-    assert_eq!(app.next_waiting(), Some(0));
-    app.move_by(-1);
-    assert_eq!(app.selected, 3);
-    app.move_by(1);
-    assert_eq!(app.selected, 0);
+fn subagent_rows_render_and_enter_resolves_to_the_parent_pane() {
+    let mut app = board();
+    app.records[0].children.push(kid(
+        "abcdef0123456789",
+        Some("Explore"),
+        State::Working,
+        "reading src",
+    ));
+    app.records[0]
+        .children
+        .push(kid("ff00ff00ff00", None, State::Done, "found it"));
+    app.records[0]
+        .children
+        .push(kid("deaddead", None, State::Ended, "gone"));
+    let out = lines(&app).join("\n");
+    assert!(out.contains("└ Explore"), "{out}");
+    assert!(out.contains("└ ff00ff00"), "{out}"); // id[:8] when no agent_type
+    assert!(!out.contains("└ deaddead"), "ended child shown:\n{out}");
+    assert!(out.contains("claude +3"), "no child badge:\n{out}");
+
+    // The cursor on a child resolves to the parent's pane.
+    let rows = app.rows();
+    let child_row = rows
+        .iter()
+        .position(|r| matches!(r, RowKind::Child(_, _)))
+        .unwrap();
+    app.selected = child_row;
     assert_eq!(app.current().unwrap().pane, "%2");
 }
 
 #[test]
+fn navigation_skips_headers_and_notes() {
+    let mut app = board();
+    app.normalize();
+    let rows = app.rows();
+    assert!(rows[app.selected].selectable());
+    assert_eq!(app.current().unwrap().pane, "%2");
+
+    let mut seen = Vec::new();
+    for _ in 0..4 {
+        assert!(app.rows()[app.selected].selectable(), "landed on a header");
+        seen.push(app.current().unwrap().pane.clone());
+        app.move_by(1);
+    }
+    assert_eq!(seen, vec!["%2", "%1", "%3", "%4"]);
+    // Wrapped back round to the first selectable row.
+    assert_eq!(app.current().unwrap().pane, "%2");
+    app.move_by(-1);
+    assert_eq!(app.current().unwrap().pane, "%4");
+}
+
+#[test]
+fn next_waiting_lands_on_the_first_flag() {
+    let mut app = board();
+    let i = app.next_waiting().unwrap();
+    app.selected = i;
+    assert_eq!(app.current().unwrap().pane, "%2");
+}
+
+#[test]
+fn long_message_is_one_truncated_line() {
+    let mut app = App::with_records(vec![rec(
+        "%1",
+        "perch",
+        State::Working,
+        1,
+        &format!("{}\nsecond line", "x".repeat(300)),
+    )]);
+    app.normalize();
+    let out = lines(&app);
+    assert!(!out.iter().any(|l| l.contains("second line")), "{out:?}");
+    assert!(out.iter().any(|l| l.contains('…')), "{out:?}");
+}
+
+#[test]
+fn light_theme_renders_without_panicking() {
+    let mut app = board();
+    app.theme = LIGHT;
+    app.show_ended = true;
+    let out = lines(&app).join("\n");
+    assert!(out.contains("⚑ needs_input"), "{out}");
+}
+
+#[test]
+fn footer_shows_the_keys_and_mute_state() {
+    let app = board();
+    let out = lines(&app);
+    let footer = out.last().unwrap();
+    assert!(footer.contains("Enter jump"), "{footer}");
+    assert!(
+        footer.contains("e ended") && footer.contains("g group"),
+        "{footer}"
+    );
+    assert!(footer.contains("sound on"), "{footer}");
+
+    let mut app = board();
+    app.muted = true;
+    app.show_help = true;
+    let out = lines(&app);
+    assert!(out[out.len() - 2].contains("muted"), "{out:?}");
+    assert!(out.last().unwrap().contains("keys:"), "{out:?}");
+}
+
+#[test]
 fn empty_store_renders_without_panicking() {
-    let app = App {
-        records: vec![],
-        selected: 0,
-        muted: false,
-        unwired: Vec::new(),
-    };
+    let mut app = App::with_records(vec![]);
     let out = lines(&app);
     assert!(out.join("\n").contains("perch"));
-    let mut app = app;
     app.move_by(1);
     assert_eq!(app.selected, 0);
     assert!(app.current().is_none());
@@ -119,16 +237,28 @@ fn empty_store_renders_without_panicking() {
 
 #[test]
 fn banner_shows_only_when_a_harness_is_unwired() {
-    let app = sorted_app();
+    let app = board();
     assert!(!lines(&app).join("\n").contains("press S to run setup"));
 
-    let mut app = sorted_app();
+    let mut app = board();
     app.unwired = vec!["claude".into(), "codex".into()];
     let out = lines(&app);
     assert!(
         out[0].contains("perch is not wired into claude, codex: press S to run setup"),
         "{out:?}"
     );
-    // The table still renders below the banner.
     assert!(out.join("\n").contains("needs_input"));
+}
+
+#[test]
+fn project_falls_back_to_the_cwd_basename_then_a_stub() {
+    let mut a = rec("%1", "", State::Idle, 1, "");
+    a.project = None;
+    a.cwd = Some("/Users/x/00_development/perch/".into());
+    let mut b = rec("%2", "", State::Idle, 1, "");
+    b.project = None;
+    let app = App::with_records(vec![a, b]);
+    let out = lines(&app).join("\n");
+    assert!(out.contains("perch"), "{out}");
+    assert!(out.contains("(no project)"), "{out}");
 }

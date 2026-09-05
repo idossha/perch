@@ -15,9 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `perch hook claude`: Claude Code lifecycle payloads on stdin become
   `starting`/`working`/`done`/`needs_input`/`idle`/`ended`. The hook always
   exits 0, so a perch failure can never fail the agent.
-- `perch tui`: ratatui dashboard of every tracked pane, sorted with whatever is
-  waiting on you first — `j`/`k` move, `Enter` jumps, `n` next waiting,
-  `m` mute, `x` dismiss, `r` refresh, `q` quit.
+- `perch tui`: ratatui dashboard of every tracked pane, grouped by project with
+  the most urgent group first, a glyph plus a colour per state, `ended` panes
+  collapsed behind a footer count, and indented rows for a pane's subagents —
+  `j`/`k` move, `Enter` jumps (a subagent jumps to its parent pane), `n` next
+  waiting, `m` mute, `x` dismiss, `e` show/hide ended, `g` grouped/flat,
+  `?` key help, `r` refresh, `q` quit. `dark` and `light` palettes, chosen with
+  `PERCH_THEME` or `[tui] theme`.
 - `perch list [--json]`, `perch status [--format plain|tmux]` for the tmux
   status line, and `perch next` to jump to the oldest waiting pane.
 - Sound on transitions into `done` and `needs_input` via `afplay`, with a

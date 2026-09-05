@@ -121,8 +121,12 @@ perch uninstall [--dry-run] [--keep-state]
 ## TUI keys
 
 Run it from the popup binding (`prefix + g`) or directly with `perch tui`.
-The table shows pane, project (branch), harness, state, age and last message,
-sorted needs_input, done, working, starting, idle, ended — oldest first.
+Rows are grouped by project, the groups ordered by urgency, and each state has
+a glyph as well as a colour so the board reads without colour: `⚑` needs_input,
+`✓` done, `▶` working, `…` starting, `·` idle, `✕` ended. Ended panes are
+collapsed behind a footer count until you press `e`. Panes with subagents show
+a `+N` badge and one indented `└` row per live subagent; jumping to a subagent
+lands on its parent pane.
 
 | key | action |
 |---|---|
@@ -131,11 +135,17 @@ sorted needs_input, done, working, starting, idle, ended — oldest first.
 | `n` | select the oldest waiting pane |
 | `m` | toggle global mute |
 | `x` | dismiss a `done` pane back to `idle` |
+| `e` | show or hide `ended` panes |
+| `g` | grouped by project ⇄ flat, newest change first |
+| `?` | key help line |
 | `r` | refresh now |
 | `S` | run `perch setup` (shown as a banner until perch is wired) |
 | `q` / `Esc` | quit |
 
-The view refreshes from disk every second.
+The view refreshes from disk every second. The `g` and `e` choices are
+remembered in `~/.local/state/perch/tui.json`. The palette is `dark` by
+default; set `PERCH_THEME=light` or `[tui] theme = "light"` in the config for
+a light terminal.
 
 ## Config
 
