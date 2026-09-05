@@ -1,10 +1,12 @@
 //! Offscreen TUI test: no terminal is opened, only ratatui's TestBackend.
 
 use chrono::{Duration, Utc};
+use crossterm::event::KeyCode;
 use perch::model::{Harness, PaneRecord, State, Subagent};
-use perch::tui::{render, App, RowKind, Selection, LIGHT};
+use perch::tui::{render, App, Nav, RowKind, Selection, LIGHT};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
+use std::time::Instant;
 
 fn rec(pane: &str, project: &str, state: State, age_secs: i64, msg: &str) -> PaneRecord {
     let mut r = PaneRecord::new(pane, Harness::Claude, "");
@@ -258,6 +260,62 @@ fn gg_and_shift_g_go_to_the_ends() {
     assert_eq!(app.jump_target().as_deref(), Some("%3"));
 }
 
+/// `g` is only ever the first half of `gg`; the view toggle lives on `v`.
+#[test]
+fn gg_goes_to_the_top_and_a_lone_g_does_nothing() {
+    let mut app = board();
+    app.grouped = false;
+    app.normalize();
+    let mut nav = Nav::new();
+    let t0 = Instant::now();
+
+    // One `g` moves nothing and changes no view.
+    nav.key(&mut app, KeyCode::Char('g'), t0);
+    assert_eq!(app.jump_target().as_deref(), Some("%3"));
+    assert!(!app.grouped && !nav.prefs_dirty, "g touched the view");
+
+    // ... and it does not linger: `g` then `j` is just `j`.
+    nav.key(&mut app, KeyCode::Char('j'), t0);
+    assert_eq!(app.jump_target().as_deref(), Some("%2"));
+    nav.key(&mut app, KeyCode::Char('g'), t0);
+    assert_eq!(app.jump_target().as_deref(), Some("%2"));
+
+    // `G` to the bottom, `gg` back to the top.
+    nav.key(&mut app, KeyCode::Char('G'), t0);
+    assert_eq!(app.jump_target().as_deref(), Some("%4"));
+    nav.key(&mut app, KeyCode::Char('g'), t0);
+    nav.key(
+        &mut app,
+        KeyCode::Char('g'),
+        t0 + std::time::Duration::from_millis(100),
+    );
+    assert_eq!(app.jump_target().as_deref(), Some("%3"));
+
+    // A second `g` after the window is a fresh first `g`, not a jump.
+    nav.key(&mut app, KeyCode::Char('G'), t0);
+    nav.key(&mut app, KeyCode::Char('g'), t0);
+    nav.key(
+        &mut app,
+        KeyCode::Char('g'),
+        t0 + std::time::Duration::from_millis(900),
+    );
+    assert_eq!(app.jump_target().as_deref(), Some("%4"));
+}
+
+#[test]
+fn v_toggles_grouped_and_flat() {
+    let mut app = board();
+    let mut nav = Nav::new();
+    assert!(app.grouped);
+    assert!(nav.key(&mut app, KeyCode::Char('v'), Instant::now()));
+    assert!(!app.grouped);
+    assert!(nav.prefs_dirty, "the view toggle must be persisted");
+    nav.prefs_dirty = false;
+    nav.key(&mut app, KeyCode::Char('v'), Instant::now());
+    assert!(app.grouped);
+    assert!(lines(&app).iter().any(|l| l.contains('▸')));
+}
+
 #[test]
 fn long_message_is_one_truncated_line() {
     let mut app = App::with_records(vec![rec(
@@ -320,6 +378,7 @@ fn the_help_overlay_shows_every_key_and_the_state_legend() {
         "Enter",
         "next waiting",
         "grouped / flat",
+        "v",
         "show ended",
         "refresh",
         "dismiss done",

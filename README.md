@@ -148,12 +148,12 @@ lands on its parent pane.
 |---|---|
 | `j` / `k` (or ↓ / ↑) | move the cursor |
 | `Enter` | jump to the selected pane and exit |
-| `gg` / `G` | first / last row |
+| `gg` / `G` | first / last row (a second `g` within 500 ms) |
 | `n` | select the oldest waiting pane |
 | `m` | toggle global mute |
 | `x` | dismiss a `done` pane back to `idle` |
 | `e` | show or hide `ended` panes |
-| `g` | grouped by project ⇄ flat, newest change first |
+| `v` | grouped by project ⇄ flat, newest change first |
 | `?` | help overlay (any key closes it) |
 | `r` | refresh now |
 | `S` | run `perch setup` (shown as a banner until perch is wired) |

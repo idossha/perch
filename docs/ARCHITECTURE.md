@@ -178,6 +178,14 @@ never moves the selection to another pane; if the selected pane disappears the
 cursor falls to the nearest row. `App::jump_target()` returns the pane id for
 the selection, resolving a subagent row to its parent pane.
 
+**Keys never overload each other.** `tui::Nav` owns the cursor and view keys
+and the single piece of state they need — a pending `g`. `gg` (a second `g`
+within `GG_WINDOW`, 500 ms) goes to the first row, `G` to the last, `v` toggles
+grouped ⇄ flat; any other key cancels a pending `g`, and a lone `g` does
+nothing. It is split out of the event loop so the whole contract is testable
+without a terminal, and it never writes prefs itself — it raises
+`prefs_dirty` and the loop persists.
+
 `perch next` picks the oldest `needs_input`, else the oldest `done`, by `since`;
 it prints the pane id, jumps, and exits 1 with `nothing waiting` when there is
 nothing to go to.

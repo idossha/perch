@@ -737,7 +737,7 @@ pub const HELP_SECTIONS: [(&str, &[(&str, &str)]); 3] = [
     (
         "View",
         &[
-            ("g", "grouped / flat"),
+            ("v", "grouped / flat"),
             ("e", "show ended"),
             ("r", "refresh"),
             ("?", "close"),
@@ -960,6 +960,73 @@ fn footer_line(app: &App, width: u16) -> Line<'static> {
     ])
 }
 
+// ---------------------------------------------------------------- keys
+
+/// How long after a `g` a second `g` still means "top".
+pub const GG_WINDOW: Duration = Duration::from_millis(500);
+
+/// The keys that only move the cursor or change the view, and the one bit of
+/// state they need: a pending `g`.
+///
+/// Split out of the event loop so the whole `gg` / `G` / `v` contract is
+/// testable without a terminal. `g` on its own does nothing: it is only ever
+/// the first half of `gg`, and the grouped/flat toggle lives on `v`.
+#[derive(Debug, Default)]
+pub struct Nav {
+    pending_g: Option<Instant>,
+    /// Set when a handled key changed a preference worth persisting; the
+    /// caller clears it. Kept out of here so tests never touch the disk.
+    pub prefs_dirty: bool,
+}
+
+impl Nav {
+    pub fn new() -> Self {
+        Nav::default()
+    }
+
+    /// Handle one key, returning whether it was consumed.
+    ///
+    /// `now` is injected so the `gg` window is testable.
+    pub fn key(&mut self, app: &mut App, code: KeyCode, now: Instant) -> bool {
+        let pending = self
+            .pending_g
+            .take()
+            .is_some_and(|t| now.duration_since(t) < GG_WINDOW);
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => app.move_by(1),
+            KeyCode::Char('k') | KeyCode::Up => app.move_by(-1),
+            KeyCode::Char('G') => app.move_to_edge(true),
+            KeyCode::Char('g') => {
+                if pending {
+                    app.move_to_edge(false);
+                } else {
+                    self.pending_g = Some(now);
+                }
+            }
+            KeyCode::Char('v') => {
+                app.grouped = !app.grouped;
+                app.normalize();
+                self.prefs_dirty = true;
+            }
+            KeyCode::Char('e') => {
+                app.show_ended = !app.show_ended;
+                app.normalize();
+                self.prefs_dirty = true;
+            }
+            KeyCode::Char('n') => {
+                if let Some(sel) = app.next_waiting() {
+                    app.selected = Some(sel);
+                    app.normalize();
+                }
+            }
+            KeyCode::Char('?') => app.show_help = true,
+            // Anything else cancels a pending `g` (already taken above).
+            _ => return false,
+        }
+        true
+    }
+}
+
 /// Run the dashboard until the user quits or jumps.
 pub fn run(tmux: &dyn Tmux, client: &str) -> Result<()> {
     let mut app = App::new(store::snapshot(tmux));
@@ -1003,8 +1070,7 @@ fn event_loop<B: Backend>(
     client: &str,
 ) -> Result<()> {
     let mut last_refresh = Instant::now();
-    // Pending `g`, so `gg` can mean "top" while a lone `g` still toggles.
-    let mut pending_g = false;
+    let mut nav = Nav::new();
     loop {
         term.draw(|f| render(f, app, Utc::now()))?;
 
@@ -1018,36 +1084,16 @@ fn event_loop<B: Backend>(
                     app.show_help = false;
                     continue;
                 }
-                let was_g = std::mem::take(&mut pending_g);
                 app.error = None;
-                match k.code {
-                    KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                    KeyCode::Char('j') | KeyCode::Down => app.move_by(1),
-                    KeyCode::Char('k') | KeyCode::Up => app.move_by(-1),
-                    KeyCode::Char('G') => app.move_to_edge(true),
-                    KeyCode::Char('n') => {
-                        if let Some(sel) = app.next_waiting() {
-                            app.selected = Some(sel);
-                            app.normalize();
-                        }
-                    }
-                    KeyCode::Char('m') => app.muted = sound::toggle_mute(),
-                    KeyCode::Char('e') => {
-                        app.show_ended = !app.show_ended;
-                        app.normalize();
+                if nav.key(app, k.code, Instant::now()) {
+                    if std::mem::take(&mut nav.prefs_dirty) {
                         save_prefs(app);
                     }
-                    KeyCode::Char('g') => {
-                        if was_g {
-                            app.move_to_edge(false);
-                        } else {
-                            pending_g = true;
-                            app.grouped = !app.grouped;
-                            app.normalize();
-                            save_prefs(app);
-                        }
-                    }
-                    KeyCode::Char('?') => app.show_help = true,
+                    continue;
+                }
+                match k.code {
+                    KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                    KeyCode::Char('m') => app.muted = sound::toggle_mute(),
                     KeyCode::Char('x') => {
                         if let Some(rec) = app.current() {
                             if rec.state == State::Done {

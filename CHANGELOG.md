@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`gg` and `G` are plain vim now, and `v` toggles the view.** `g` used to
+  both toggle grouped/flat and start `gg`, so going to the top of the board
+  also flipped the layout under you. `gg` (a second `g` within 500 ms) goes to
+  the first row, `G` to the last, `v` switches grouped ⇄ flat, and a lone `g`
+  does nothing.
 - **Navigation is now a contract.** Every jump is exactly one
   `tmux switch-client -c <client_name> -t <pane_id>`, with the client always
   named: `perch tui --client`, `perch next --client` and the new `perch open
