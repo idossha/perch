@@ -180,7 +180,7 @@ changes the fingerprint, at which point perch should call it instead.
 nothing else; `done` means a turn finished while the pane was not being looked
 at; `idle` means ready and seen. Claude's `idle_prompt` (and `auth_success`,
 `quota_*`) is recorded and ignored. A `Stop` on the focused pane goes to `idle`
-silently. `perch seen <pane>`, run from `pane-focus-in`, from `perch next` and
+silently. `perch seen <pane>`, run from the tmux `after-select-window`, `after-select-pane` and `client-session-changed` hooks, from `perch next` and
 from the TUI, performs the transition back to `idle`; a `PreToolUse` clears a
 `needs_input` nobody told perch about.
 
@@ -192,9 +192,11 @@ a second vocabulary, and makes `done` mean something a glance can trust.
 
 **Cost.** perch now subscribes to `PreToolUse`, so a hook process runs on every
 tool call; the reducer returns immediately unless the pane is `needs_input`.
-Deciding a `Stop` costs one blocking `tmux display -p`. Focus tracking needs
-`focus-events on` and a terminal that reports focus; without it, a pane you are
-watching reads `done` until you switch to it — the old behaviour.
+Deciding a `Stop` costs one blocking `tmux display -p`. Seen-tracking rides on
+tmux's `after-select-window`, `after-select-pane` and `client-session-changed`
+hooks in indexed slots; `pane-focus-in` registers but never fires on tmux 3.6,
+so a pane you switch to by other means reads `done` until a reader or `perch
+next` looks at it.
 
 **Revisit if** the `PreToolUse` cost shows up in practice, or a harness starts
 reporting "the dialog is gone" directly.

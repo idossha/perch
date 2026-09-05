@@ -251,7 +251,7 @@ perch uses herdr's definitions:
 
 **`done` means finished while you were elsewhere; `idle` means you have seen
 it.** A turn that ends in the pane you are watching goes straight to `idle`
-without a chime, focusing a pane marks it seen (`pane-focus-in` runs
+without a chime, switching to its window or pane marks it seen (a tmux `after-select-window` hook runs
 `perch seen`), and so do `prefix + N` and the TUI's jump. `needs_input` always
 sounds.
 

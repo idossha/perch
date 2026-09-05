@@ -73,7 +73,7 @@ pub fn run(harness: Harness) -> anyhow::Result<()> {
 
 /// Mark a pane as seen: a finished turn you are now looking at is just idle.
 ///
-/// Called from `pane-focus-in`, from `perch next` and from the TUI's jump, so
+/// Called from the tmux `after-select-window` / `after-select-pane` / `client-session-changed` hooks, from `perch next` and from the TUI's jump, so
 /// `done` means "finished while you were elsewhere" everywhere.
 pub fn seen(pane: &str) -> bool {
     let Some(mut rec) = store::load(pane) else {

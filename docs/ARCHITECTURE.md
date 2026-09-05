@@ -61,7 +61,7 @@ chimes. `needs_input` always sounds.
 
 `perch seen <pane>` performs the other half: `done` becomes `idle` and the
 window flag clears; anything else is a no-op. The tmux snippet wires it to
-`pane-focus-in` (with `focus-events on`), and `perch next` and the TUI's jump
+the tmux `after-select-window`, `after-select-pane` and `client-session-changed` hooks, and `perch next` and the TUI's jump
 call the same code for the pane they move you to.
 
 A `needs_input` that you answered where perch could not see it — in the pane
