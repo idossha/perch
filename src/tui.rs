@@ -25,14 +25,25 @@ pub struct App {
     pub records: Vec<PaneRecord>,
     pub selected: usize,
     pub muted: bool,
+    /// Detected harnesses with no perch hook, shown as a top banner.
+    pub unwired: Vec<String>,
 }
 
 impl App {
     pub fn new(records: Vec<PaneRecord>) -> Self {
+        let paths = crate::paths::Paths::from_env();
         App {
             records,
             selected: 0,
             muted: sound::is_muted(),
+            unwired: if crate::setup::needs_nudge(&paths) {
+                crate::setup::unwired_harnesses(&paths)
+                    .into_iter()
+                    .map(String::from)
+                    .collect()
+            } else {
+                Vec::new()
+            },
         }
     }
 
@@ -97,7 +108,28 @@ pub fn row_cells(rec: &PaneRecord, now: DateTime<Utc>) -> [String; 6] {
 }
 
 pub fn render(f: &mut Frame, app: &App, now: DateTime<Utc>) {
-    let areas = Layout::vertical([Constraint::Min(3), Constraint::Length(1)]).split(f.area());
+    let banner = u16::from(!app.unwired.is_empty());
+    let areas = Layout::vertical([
+        Constraint::Length(banner),
+        Constraint::Min(3),
+        Constraint::Length(1),
+    ])
+    .split(f.area());
+    if banner == 1 {
+        let text = format!(
+            "perch is not wired into {}: press S to run setup",
+            app.unwired.join(", ")
+        );
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                text,
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ))),
+            areas[0],
+        );
+    }
 
     let header = Row::new(["pane", "project", "harness", "state", "age", "last message"])
         .style(Style::default().add_modifier(Modifier::BOLD));
@@ -136,7 +168,7 @@ pub fn render(f: &mut Frame, app: &App, now: DateTime<Utc>) {
     if !app.records.is_empty() {
         st.select(Some(app.selected));
     }
-    f.render_stateful_widget(table, areas[0], &mut st);
+    f.render_stateful_widget(table, areas[1], &mut st);
 
     let mute = if app.muted { "muted" } else { "sound on" };
     let help = Line::from(vec![
@@ -144,7 +176,7 @@ pub fn render(f: &mut Frame, app: &App, now: DateTime<Utc>) {
         Span::raw(mute),
         Span::raw("]"),
     ]);
-    f.render_widget(Paragraph::new(help), areas[1]);
+    f.render_widget(Paragraph::new(help), areas[2]);
 }
 
 /// Run the dashboard until the user quits or jumps.
@@ -194,6 +226,19 @@ fn event_loop<B: Backend>(term: &mut Terminal<B>, app: &mut App, tmux: &dyn Tmux
                                 app.refresh(store::snapshot(tmux));
                             }
                         }
+                    }
+                    KeyCode::Char('S') => {
+                        let paths = crate::paths::Paths::from_env();
+                        let _ = crate::setup::run(&paths, &crate::setup::SetupOpts::default());
+                        app.unwired = if crate::setup::needs_nudge(&paths) {
+                            crate::setup::unwired_harnesses(&paths)
+                                .into_iter()
+                                .map(String::from)
+                                .collect()
+                        } else {
+                            Vec::new()
+                        };
+                        app.refresh(store::snapshot(tmux));
                     }
                     KeyCode::Char('r') => app.refresh(store::snapshot(tmux)),
                     KeyCode::Enter => {

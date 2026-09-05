@@ -45,6 +45,7 @@ fn sorted_app() -> App {
         records,
         selected: 0,
         muted: false,
+        unwired: Vec::new(),
     }
 }
 
@@ -106,6 +107,7 @@ fn empty_store_renders_without_panicking() {
         records: vec![],
         selected: 0,
         muted: false,
+        unwired: Vec::new(),
     };
     let out = lines(&app);
     assert!(out.join("\n").contains("perch"));
@@ -113,4 +115,20 @@ fn empty_store_renders_without_panicking() {
     app.move_by(1);
     assert_eq!(app.selected, 0);
     assert!(app.current().is_none());
+}
+
+#[test]
+fn banner_shows_only_when_a_harness_is_unwired() {
+    let app = sorted_app();
+    assert!(!lines(&app).join("\n").contains("press S to run setup"));
+
+    let mut app = sorted_app();
+    app.unwired = vec!["claude".into(), "codex".into()];
+    let out = lines(&app);
+    assert!(
+        out[0].contains("perch is not wired into claude, codex: press S to run setup"),
+        "{out:?}"
+    );
+    // The table still renders below the banner.
+    assert!(out.join("\n").contains("needs_input"));
 }
