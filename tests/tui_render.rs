@@ -315,7 +315,7 @@ fn the_help_overlay_shows_every_key_and_the_state_legend() {
         assert!(out.contains(section), "{out}");
     }
     for key in [
-        "j / k",
+        "j/k",
         "gg / G",
         "Enter",
         "next waiting",

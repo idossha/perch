@@ -728,7 +728,7 @@ pub const HELP_SECTIONS: [(&str, &[(&str, &str)]); 3] = [
     (
         "Navigate",
         &[
-            ("j / k  ↓ ↑", "move"),
+            ("j/k  ↓/↑", "move"),
             ("gg / G", "top / bottom"),
             ("Enter", "jump to pane"),
             ("n", "next waiting"),
@@ -746,7 +746,7 @@ pub const HELP_SECTIONS: [(&str, &[(&str, &str)]); 3] = [
     (
         "Act",
         &[
-            ("x", "dismiss done -> idle"),
+            ("x", "dismiss done"),
             ("m", "mute"),
             ("S", "setup"),
             ("q", "quit"),
@@ -778,43 +778,62 @@ fn centered(area: ratatui::layout::Rect, w: u16, h: u16) -> ratatui::layout::Rec
     }
 }
 
+/// Width of one help column, and of the key half inside it.
+const HELP_COL: usize = 26;
+const HELP_KEY: usize = 10;
+
 fn help_overlay(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let t = &app.theme;
-    let mut lines: Vec<Line> = Vec::new();
-    for (title, keys) in HELP_SECTIONS {
-        lines.push(Line::from(Span::styled(
-            title.to_string(),
-            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
-        )));
-        for (key, action) in keys {
-            lines.push(Line::from(vec![
-                Span::styled(format!("  {key:<12}"), Style::default().fg(t.text)),
-                Span::styled((*action).to_string(), Style::default().fg(t.dim)),
-            ]));
+    let title = Style::default().fg(t.accent).add_modifier(Modifier::BOLD);
+    let key = Style::default().fg(t.text);
+    let dim = Style::default().fg(t.dim);
+
+    // The three sections side by side, as aligned key -> action pairs.
+    let mut lines: Vec<Line> = vec![Line::from(
+        HELP_SECTIONS
+            .iter()
+            .map(|(name, _)| Span::styled(format!("{name:<HELP_COL$}"), title))
+            .collect::<Vec<_>>(),
+    )];
+    let rows = HELP_SECTIONS
+        .iter()
+        .map(|(_, k)| k.len())
+        .max()
+        .unwrap_or(0);
+    for r in 0..rows {
+        let mut spans = Vec::new();
+        for (_, keys) in HELP_SECTIONS {
+            match keys.get(r) {
+                Some((k, action)) => {
+                    spans.push(Span::styled(format!(" {k:<w$}", w = HELP_KEY), key));
+                    spans.push(Span::styled(fit(action, HELP_COL - HELP_KEY - 1), dim));
+                }
+                None => spans.push(Span::raw(" ".repeat(HELP_COL))),
+            }
         }
+        lines.push(Line::from(spans));
     }
+
     lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("States", title)));
     for (state, meaning) in HELP_LEGEND {
         lines.push(Line::from(vec![
             Span::styled(
-                format!("  {} {:<12}", state_glyph(state, 0), state.as_str()),
+                format!(" {} {:<12}", state_glyph(state, 0), state.as_str()),
                 t.state_style(state),
             ),
-            Span::styled(meaning.to_string(), Style::default().fg(t.dim)),
+            Span::styled(meaning.to_string(), dim),
         ]));
     }
-    let h = (lines.len() as u16 + 2).max(18);
-    let rect = centered(area, 60, h);
+
+    let rect = centered(area, (HELP_COL * 3 + 2) as u16, lines.len() as u16 + 2);
     f.render_widget(ratatui::widgets::Clear, rect);
     f.render_widget(
         Paragraph::new(lines).block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(t.accent))
-                .title(Span::styled(
-                    "help — any key closes",
-                    Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
-                )),
+                .title(Span::styled("help — any key closes", title)),
         ),
         rect,
     );

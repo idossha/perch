@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Navigation is now a contract.** Every jump is exactly one
+  `tmux switch-client -c <client_name> -t <pane_id>`, with the client always
+  named: `perch tui --client`, `perch next --client` and the new `perch open
+  --client`. A tmux command without `-c` picks a client by heuristic, which is
+  why a jump from the dashboard sometimes landed on the wrong pane or nowhere;
+  it can no longer happen. Jumps are waited on and checked, the pane is
+  confirmed live first, and a failure shows `pane %N is gone` in the dashboard
+  instead of closing it.
+- The dashboard's cursor is keyed by pane id rather than by row number, so the
+  board reordering under you can never move your selection to another agent.
+- The footer is one line — `Enter jump  n next  ? help  q quit` plus a
+  right-aligned `[sound on] [grouped] N panes` — and `?` now opens a centered
+  help overlay with the full key list and a legend explaining each state. Any
+  key closes it. `gg` / `G` jump to the first / last row, and the arrow keys
+  work everywhere `j`/`k` do.
+- `perch next` prefers the oldest `needs_input` over the oldest `done` and
+  exits 1 with `nothing waiting`.
+- `perch tui` renders "no agents yet" on an empty state directory instead of a
+  bare board, and never panics without tmux.
+- `PERCH_DEBUG=1` logs each jump's exact tmux argv to stderr.
+
+### Removed
+
+- **The toast popup, and every visual cue with it.** `perch toast`, `perch
+  toast-body`, the `[toast]` and `[notify]` config tables, the macOS
+  `osascript` banner and the `unicode-width` dependency are gone. Sound is the
+  only thing perch does to get your attention; the `@perch_state` pane option
+  stays, for status lines you write yourself. An old config with `[toast]` or
+  `[notify]` still loads — the retired tables are ignored.
+
+### Migration
+
+- Re-run `perch setup` (or `perch install tmux`) to get the new bindings:
+  `bind g run-shell 'perch open --client "#{client_name}"'` and the matching
+  `bind N`. The old `bind g display-popup ... 'perch tui'` cannot tell perch
+  which client to move.
+
 ### Added
 
 - Per-pane state tracking keyed by `$TMUX_PANE`, stored as atomically written

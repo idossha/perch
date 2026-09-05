@@ -1,0 +1,76 @@
+//! Codex's hook payloads against a real private tmux server.
+
+#[path = "e2e/mod.rs"]
+mod e2e;
+
+use std::time::Duration;
+
+use e2e::{fixture, wait_for, Server};
+
+fn f(name: &str) -> String {
+    fixture("codex", name)
+}
+
+fn assert_pane_state(s: &Server, pane: &str, want: &str) {
+    let ok = wait_for(
+        || s.pane_option(pane, "@perch_state") == want,
+        Duration::from_secs(2),
+    );
+    assert!(
+        ok,
+        "@perch_state on {pane} is {:?}, wanted {want:?}",
+        s.pane_option(pane, "@perch_state")
+    );
+}
+
+#[test]
+fn codex_hooks_drive_state_through_a_real_server() {
+    if e2e::no_tmux() {
+        return;
+    }
+    let s = Server::start();
+    let a = s.pane_of("one:0");
+    let b = s.new_window("one", "second");
+    let client = s.attach("one");
+    s.tmux(&["select-window", "-t", "one:0"]);
+
+    s.hook(&a, "codex", &f("session_start.json"));
+    assert_eq!(s.state_of(&a), "idle");
+    assert_pane_state(&s, &a, "idle");
+
+    s.hook(&a, "codex", &f("user_prompt_submit.json"));
+    assert_eq!(s.state_of(&a), "working");
+
+    assert_eq!(s.client_pane(&client.name), a);
+    s.hook(&a, "codex", &f("stop.json"));
+    assert_eq!(s.state_of(&a), "idle", "watched turns end idle");
+
+    s.tmux(&["select-window", "-t", "one:1"]);
+    assert!(wait_for(
+        || s.client_pane(&client.name) == b,
+        Duration::from_secs(2)
+    ));
+    s.hook(&a, "codex", &f("user_prompt_submit.json"));
+    s.hook(&a, "codex", &f("stop.json"));
+    assert_eq!(s.state_of(&a), "done", "unwatched turns end done");
+    assert_pane_state(&s, &a, "done");
+
+    s.hook(&a, "codex", &f("permission_request.json"));
+    assert_eq!(s.state_of(&a), "needs_input");
+    assert_pane_state(&s, &a, "needs_input");
+
+    s.hook(&a, "codex", &f("subagent_start.json"));
+    s.hook(&a, "codex", &f("subagent_stop.json"));
+    assert_eq!(
+        s.state_of(&a),
+        "needs_input",
+        "a subagent never moves the parent"
+    );
+
+    s.hook(&a, "codex", &f("session_end.json"));
+    assert_eq!(s.state_of(&a), "ended");
+    assert_pane_state(&s, &a, "ended");
+
+    let events = std::fs::read_to_string(s.state_dir.join("events.jsonl")).unwrap();
+    assert!(events.contains("\"harness\":\"codex\""), "{events}");
+}
