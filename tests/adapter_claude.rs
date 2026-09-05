@@ -83,9 +83,16 @@ fn payload_without_an_event_name_is_an_error() {
 }
 
 #[test]
-fn stub_adapters_report_not_implemented() {
-    for h in [Harness::Codex, Harness::Pi] {
-        let err = adapters::parse(h, &serde_json::json!({})).unwrap_err();
-        assert!(err.to_string().contains("not implemented"));
+fn each_harness_has_a_real_adapter() {
+    // A Claude-shaped Stop is understood by codex too; pi uses its own key.
+    for (h, raw) in [
+        (
+            Harness::Codex,
+            serde_json::json!({"hook_event_name": "Stop"}),
+        ),
+        (Harness::Pi, serde_json::json!({"event": "agent_end"})),
+    ] {
+        let p = adapters::parse(h, &raw).unwrap().unwrap();
+        assert_eq!(p.event, Event::Stop { last_message: None });
     }
 }

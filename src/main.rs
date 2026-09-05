@@ -134,10 +134,9 @@ fn dispatch(cmd: Cmd) -> anyhow::Result<()> {
         } => {
             let report = match target {
                 InstallTarget::Claude => install::install_claude(dry_run, print)?,
+                InstallTarget::Codex => install::install_codex(dry_run, print)?,
+                InstallTarget::Pi => install::install_pi(dry_run, print)?,
                 InstallTarget::Tmux => install::install_tmux(dry_run, apply, print)?,
-                InstallTarget::Codex | InstallTarget::Pi => {
-                    anyhow::bail!("codex and pi installers land in phase 3")
-                }
             };
             print!("{report}");
             Ok(())

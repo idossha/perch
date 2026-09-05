@@ -1,4 +1,4 @@
-//! Idempotent, backup-first installers for the Claude hooks and the tmux config.
+//! Idempotent, backup-first installers for the harness hooks and the tmux config.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -15,6 +15,16 @@ pub const CLAUDE_EVENTS: &[&str] = &[
     "SessionEnd",
 ];
 
+/// The Codex hook events perch subscribes to. Codex names `PermissionRequest`
+/// where Claude sends a `Notification`; the rest of the names line up.
+pub const CODEX_EVENTS: &[&str] = &[
+    "SessionStart",
+    "UserPromptSubmit",
+    "Stop",
+    "PermissionRequest",
+    "SessionEnd",
+];
+
 /// Marker used to decide whether perch is already installed in a hook array.
 const MARKER: &str = "perch hook";
 
@@ -27,6 +37,29 @@ pub fn claude_settings_path() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".claude/settings.json")
+}
+
+pub fn codex_hooks_path() -> PathBuf {
+    if let Ok(p) = std::env::var("PERCH_CODEX_HOOKS") {
+        if !p.is_empty() {
+            return PathBuf::from(p);
+        }
+    }
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".codex/hooks.json")
+}
+
+/// Directory holding pi's TypeScript extensions.
+pub fn pi_extension_dir() -> PathBuf {
+    if let Ok(p) = std::env::var("PERCH_PI_EXT_DIR") {
+        if !p.is_empty() {
+            return PathBuf::from(p);
+        }
+    }
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".pi/agent/extensions")
 }
 
 pub fn tmux_conf_path() -> PathBuf {
@@ -45,8 +78,8 @@ pub fn perch_tmux_conf_path() -> PathBuf {
 }
 
 /// The hook group perch appends. `matcher` is set for the events that take one.
-fn perch_group(event: &str) -> Value {
-    let hooks = json!([{ "type": "command", "command": "perch hook claude", "timeout": 5 }]);
+fn perch_group(event: &str, command: &str, timeout: u64) -> Value {
+    let hooks = json!([{ "type": "command", "command": command, "timeout": timeout }]);
     if event == "SessionStart" {
         json!({ "matcher": "*", "hooks": hooks })
     } else {
@@ -82,7 +115,16 @@ pub struct Merge {
 
 /// Append perch's hook group to each event array, never reordering or dropping
 /// what is already there.
-pub fn merge_claude_settings(mut settings: Value) -> Merge {
+pub fn merge_claude_settings(settings: Value) -> Merge {
+    merge_hooks(settings, CLAUDE_EVENTS, "perch hook claude", 5)
+}
+
+/// The same merge against `~/.codex/hooks.json`, which has Claude's shape.
+pub fn merge_codex_hooks(settings: Value) -> Merge {
+    merge_hooks(settings, CODEX_EVENTS, "perch hook codex", 10)
+}
+
+fn merge_hooks(mut settings: Value, events: &[&str], command: &str, timeout: u64) -> Merge {
     if !settings.is_object() {
         settings = json!({});
     }
@@ -98,7 +140,7 @@ pub fn merge_claude_settings(mut settings: Value) -> Merge {
 
     let mut added = Vec::new();
     let mut skipped = Vec::new();
-    for event in CLAUDE_EVENTS {
+    for event in events {
         let arr = hooks.entry(*event).or_insert_with(|| json!([]));
         if !arr.is_array() {
             *arr = json!([]);
@@ -107,7 +149,9 @@ pub fn merge_claude_settings(mut settings: Value) -> Merge {
             skipped.push((*event).to_string());
             continue;
         }
-        arr.as_array_mut().expect("array").push(perch_group(event));
+        arr.as_array_mut()
+            .expect("array")
+            .push(perch_group(event, command, timeout));
         added.push((*event).to_string());
     }
     Merge {
@@ -119,13 +163,32 @@ pub fn merge_claude_settings(mut settings: Value) -> Merge {
 
 /// Install (or preview) the Claude hooks.
 pub fn install_claude(dry_run: bool, print: bool) -> Result<String> {
-    let path = claude_settings_path();
+    install_hooks(
+        claude_settings_path(),
+        merge_claude_settings,
+        dry_run,
+        print,
+    )
+}
+
+/// Install (or preview) the Codex hooks.
+pub fn install_codex(dry_run: bool, print: bool) -> Result<String> {
+    install_hooks(codex_hooks_path(), merge_codex_hooks, dry_run, print)
+}
+
+/// Merge perch into one JSON hooks file, backing it up first.
+fn install_hooks(
+    path: PathBuf,
+    merge: fn(Value) -> Merge,
+    dry_run: bool,
+    print: bool,
+) -> Result<String> {
     let current: Value = match fs::read_to_string(&path) {
         Ok(s) if !s.trim().is_empty() => serde_json::from_str(&s)
             .with_context(|| format!("{} is not valid JSON", path.display()))?,
         _ => json!({}),
     };
-    let merge = merge_claude_settings(current);
+    let merge = merge(current);
     let body = serde_json::to_string_pretty(&merge.settings)? + "\n";
 
     if print {
@@ -157,6 +220,45 @@ pub fn install_claude(dry_run: bool, print: bool) -> Result<String> {
     }
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
+    }
+    write_atomic(&path, body.as_bytes())?;
+    report.push_str("installed\n");
+    Ok(report)
+}
+
+/// Write pi's extension to `~/.pi/agent/extensions/perch.ts`.
+///
+/// The extension is a static template embedded in the binary, so "installed"
+/// means "byte-identical to the template"; a stale copy is replaced.
+pub fn install_pi(dry_run: bool, print: bool) -> Result<String> {
+    let body = crate::adapters::PI_EXTENSION;
+    if print {
+        return Ok(body.to_string());
+    }
+    let path = pi_extension_dir().join("perch.ts");
+    let mut report = format!("extension: {}\n", path.display());
+
+    if fs::read_to_string(&path).is_ok_and(|s| s == body) {
+        report.push_str("already installed and up to date; nothing to do\n");
+        return Ok(report);
+    }
+    let exists = path.exists();
+    report.push_str(if exists {
+        "would replace the existing perch.ts\n"
+    } else {
+        "would write a new perch.ts\n"
+    });
+    if dry_run {
+        report.push_str("dry run: no files written\n");
+        return Ok(report);
+    }
+    if exists {
+        let backup = backup_path(&path);
+        fs::copy(&path, &backup)?;
+        report.push_str(&format!("backed up to {}\n", backup.display()));
+    }
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
     write_atomic(&path, body.as_bytes())?;
     report.push_str("installed\n");

@@ -30,10 +30,15 @@ fn run(dir: &std::path::Path, args: &[&str], stdin: Option<&str>) -> (String, St
 }
 
 fn fixture(name: &str) -> String {
-    std::fs::read_to_string(
-        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/claude/").to_string() + name,
-    )
-    .unwrap()
+    harness_fixture("claude", name)
+}
+
+fn harness_fixture(harness: &str, name: &str) -> String {
+    let path = format!(
+        "{}/tests/fixtures/{harness}/{name}",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
 }
 
 #[test]
@@ -78,6 +83,56 @@ fn malformed_and_untracked_payloads_still_exit_zero() {
         assert!(ok, "hook must never fail its harness: {body:?}");
     }
     assert!(!p.join("panes").exists());
+}
+
+#[test]
+fn codex_and_pi_hooks_record_the_same_way_claude_does() {
+    for (harness, prompt, stop, message) in [
+        (
+            "codex",
+            "user_prompt_submit.json",
+            "stop.json",
+            "Added the codex adapter.",
+        ),
+        (
+            "pi",
+            "agent_start.json",
+            "agent_end.json",
+            "Wrote the pi extension.",
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        let args = ["hook", harness];
+        assert!(run(p, &args, Some(&harness_fixture(harness, prompt))).2);
+        assert!(run(p, &args, Some(&harness_fixture(harness, stop))).2);
+
+        let (out, _, ok) = run(p, &["list", "--json"], None);
+        assert!(ok);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let rec = &v.as_array().unwrap()[0];
+        assert_eq!(rec["pane"], "%999", "{harness}");
+        assert_eq!(rec["harness"], harness);
+        assert_eq!(rec["project"], "perch", "{harness}");
+        assert_eq!(rec["last_message"], message, "{harness}");
+
+        let events = std::fs::read_to_string(p.join("events.jsonl")).unwrap();
+        assert_eq!(events.lines().count(), 2, "{harness}: {events}");
+        assert!(events.contains("\"event\":\"stop\""), "{harness}");
+    }
+}
+
+#[test]
+fn codex_and_pi_hooks_never_fail_their_harness() {
+    for harness in ["codex", "pi"] {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        for body in ["", "not json", "{}", r#"{"hook_event_name":"PreToolUse"}"#] {
+            let (_, _, ok) = run(p, &["hook", harness], Some(body));
+            assert!(ok, "{harness} must never fail its harness: {body:?}");
+        }
+        assert!(!p.join("panes").exists(), "{harness}");
+    }
 }
 
 #[test]
