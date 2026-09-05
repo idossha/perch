@@ -2,7 +2,7 @@
 
 use chrono::{Duration, Utc};
 use perch::model::{Harness, PaneRecord, State, Subagent};
-use perch::tui::{render, App, RowKind, LIGHT};
+use perch::tui::{render, App, RowKind, Selection, LIGHT};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 
@@ -148,8 +148,9 @@ fn subagent_rows_render_and_enter_resolves_to_the_parent_pane() {
         .iter()
         .position(|r| matches!(r, RowKind::Child(_, _)))
         .unwrap();
-    app.selected = child_row;
+    app.selected = app.selection_at(&rows[child_row]);
     assert_eq!(app.current().unwrap().pane, "%2");
+    assert_eq!(app.jump_target().as_deref(), Some("%2"));
 }
 
 #[test]
@@ -157,12 +158,16 @@ fn navigation_skips_headers_and_notes() {
     let mut app = board();
     app.normalize();
     let rows = app.rows();
-    assert!(rows[app.selected].selectable());
+    assert!(rows[app.cursor_row(&rows)].selectable());
     assert_eq!(app.current().unwrap().pane, "%2");
 
     let mut seen = Vec::new();
     for _ in 0..4 {
-        assert!(app.rows()[app.selected].selectable(), "landed on a header");
+        let rows = app.rows();
+        assert!(
+            rows[app.cursor_row(&rows)].selectable(),
+            "landed on a header"
+        );
         seen.push(app.current().unwrap().pane.clone());
         app.move_by(1);
     }
@@ -174,11 +179,83 @@ fn navigation_skips_headers_and_notes() {
 }
 
 #[test]
-fn next_waiting_lands_on_the_first_flag() {
+fn next_waiting_is_the_oldest_needs_input_then_the_oldest_done() {
     let mut app = board();
-    let i = app.next_waiting().unwrap();
-    app.selected = i;
+    app.selected = app.next_waiting();
     assert_eq!(app.current().unwrap().pane, "%2");
+
+    // With nothing flagged, the oldest `done` is next.
+    let mut app = board();
+    app.records[0].state = State::Working;
+    assert_eq!(app.next_waiting().unwrap().pane, "%1");
+
+    let mut app = board();
+    for r in app.records.iter_mut() {
+        r.state = State::Idle;
+    }
+    assert!(app.next_waiting().is_none());
+}
+
+/// Selection is keyed by pane id, so a refresh that reorders the board — a
+/// group jumping to the top because one of its panes needs input — leaves the
+/// cursor on the same agent. This is the bug the navigation contract exists
+/// for: `Enter` must never move a client to a pane the user was not on.
+#[test]
+fn the_selection_survives_a_reordering_refresh() {
+    let mut app = board();
+    app.grouped = false;
+    app.normalize();
+    app.move_by(1);
+    let want = app.jump_target().unwrap();
+    assert_eq!(want, "%2");
+
+    // Reverse the record order and make a different pane the most urgent.
+    let mut records = app.records.clone();
+    records.reverse();
+    records[0].state = State::NeedsInput;
+    records[0].since = Utc::now().to_rfc3339();
+    app.refresh(records);
+
+    assert_eq!(app.jump_target().as_deref(), Some("%2"));
+    assert_eq!(
+        app.selected,
+        Some(Selection {
+            pane: "%2".into(),
+            child: None
+        })
+    );
+}
+
+/// When the selected pane is gone the cursor falls to a neighbouring row
+/// rather than snapping to the top of the board.
+#[test]
+fn a_vanished_pane_moves_the_cursor_to_the_nearest_row() {
+    let mut app = board();
+    app.grouped = false;
+    app.normalize();
+    app.move_by(2);
+    assert_eq!(app.jump_target().as_deref(), Some("%1"));
+
+    let records: Vec<_> = app
+        .records
+        .iter()
+        .filter(|r| r.pane != "%1")
+        .cloned()
+        .collect();
+    app.refresh(records);
+    let target = app.jump_target().unwrap();
+    assert_ne!(target, "%1");
+    assert!(app.records.iter().any(|r| r.pane == target));
+}
+
+#[test]
+fn gg_and_shift_g_go_to_the_ends() {
+    let mut app = board();
+    app.grouped = false;
+    app.move_to_edge(true);
+    assert_eq!(app.jump_target().as_deref(), Some("%4"));
+    app.move_to_edge(false);
+    assert_eq!(app.jump_target().as_deref(), Some("%3"));
 }
 
 #[test]
@@ -206,33 +283,91 @@ fn light_theme_renders_without_panicking() {
 }
 
 #[test]
-fn footer_shows_the_keys_and_mute_state() {
+fn the_footer_is_one_line_of_essentials_and_a_status() {
     let app = board();
     let out = lines(&app);
     let footer = out.last().unwrap();
-    assert!(footer.contains("Enter jump"), "{footer}");
-    assert!(
-        footer.contains("e ended") && footer.contains("g group"),
-        "{footer}"
-    );
-    assert!(footer.contains("sound on"), "{footer}");
+    for part in ["Enter jump", "n next", "? help", "q quit"] {
+        assert!(footer.contains(part), "{footer}");
+    }
+    assert!(footer.contains("[sound on]"), "{footer}");
+    assert!(footer.contains("[grouped]"), "{footer}");
+    assert!(footer.contains("5 panes"), "{footer}");
+    // Never two stacked lines: the line above the footer is the board border.
+    assert!(!out[out.len() - 2].contains("Enter jump"), "{out:?}");
 
     let mut app = board();
     app.muted = true;
+    app.grouped = false;
+    let footer = lines(&app).last().unwrap().clone();
+    assert!(
+        footer.contains("[muted]") && footer.contains("[flat]"),
+        "{footer}"
+    );
+}
+
+#[test]
+fn the_help_overlay_shows_every_key_and_the_state_legend() {
+    let mut app = board();
     app.show_help = true;
+    let out = lines(&app).join("\n");
+    for section in ["Navigate", "View", "Act"] {
+        assert!(out.contains(section), "{out}");
+    }
+    for key in [
+        "j / k",
+        "gg / G",
+        "Enter",
+        "next waiting",
+        "grouped / flat",
+        "show ended",
+        "refresh",
+        "dismiss done",
+        "mute",
+        "setup",
+    ] {
+        assert!(out.contains(key), "missing {key}:\n{out}");
+    }
+    for (glyph, name) in [
+        ("▶", "working"),
+        ("⚑", "needs_input"),
+        ("✓", "done"),
+        ("·", "idle"),
+        ("✕", "ended"),
+    ] {
+        assert!(
+            out.contains(&format!("{glyph} {name}")),
+            "legend {name}:\n{out}"
+        );
+    }
+    assert!(out.contains("blocking the agent"), "{out}");
+    assert!(out.contains("while you were elsewhere"), "{out}");
+    // The footer is still one line under the overlay.
+    let last = lines(&app).last().unwrap().clone();
+    assert!(last.contains("q quit"), "{last}");
+}
+
+/// An error from a jump is its own line and the dashboard stays open.
+#[test]
+fn a_gone_pane_renders_an_error_line() {
+    let mut app = board();
+    app.error = Some("pane %9 is gone".into());
     let out = lines(&app);
-    assert!(out[out.len() - 2].contains("muted"), "{out:?}");
-    assert!(out.last().unwrap().contains("keys:"), "{out:?}");
+    assert!(out.iter().any(|l| l.contains("pane %9 is gone")), "{out:?}");
+    assert!(out.last().unwrap().contains("Enter jump"), "{out:?}");
 }
 
 #[test]
 fn empty_store_renders_without_panicking() {
     let mut app = App::with_records(vec![]);
     let out = lines(&app);
-    assert!(out.join("\n").contains("perch"));
+    assert!(out
+        .join("\n")
+        .contains("no agents yet — start claude/codex/pi in a tmux pane"));
     app.move_by(1);
-    assert_eq!(app.selected, 0);
+    assert_eq!(app.selected, None);
     assert!(app.current().is_none());
+    assert!(app.jump_target().is_none());
 }
 
 #[test]
@@ -263,12 +398,11 @@ fn project_falls_back_to_the_cwd_basename_then_a_stub() {
     assert!(out.contains("(no project)"), "{out}");
 }
 
-/// What `Enter` does: resolve the pane's session from the live pane list and
-/// move the *calling* client there, synchronously — the popup closes the
-/// instant `jump_to` returns, so anything merely spawned would be killed with
-/// the popup's pty before tmux ran it.
+/// What `Enter` does: one `switch-client -c <client> -t <pane_id>`, waited on
+/// and checked. The popup closes the instant `jump_to` returns, so anything
+/// merely spawned would be killed with the popup's pty before tmux ran it.
 #[test]
-fn enter_switches_session_then_selects_by_pane_id() {
+fn enter_switches_the_named_client_to_the_pane_id() {
     let dir = tempfile::tempdir().unwrap();
     let log = dir.path().join("tmux.log");
     std::env::set_var("PERCH_TMUX_LOG", &log);
@@ -283,24 +417,19 @@ fn enter_switches_session_then_selects_by_pane_id() {
             pid: None,
         }],
     };
-    perch::tui::jump_to(&tmux, "%7");
-    // Read before anything else can have run: the write already happened.
+    assert_eq!(perch::tui::jump_to(&tmux, "/dev/ttys004", "%7"), Ok(()));
     let body = std::fs::read_to_string(&log).unwrap();
     std::env::remove_var("PERCH_TMUX_LOG");
     std::env::remove_var("PERCH_STATE_DIR");
 
     assert_eq!(
         body.lines().next().unwrap(),
-        "switch-client -t other ; select-window -t %7 ; select-pane -t %7"
+        "switch-client -c /dev/ttys004 -t %7"
     );
 
-    // A pane tmux does not know about falls back to selecting in place.
-    std::env::set_var("PERCH_TMUX_LOG", &log);
-    perch::tui::jump_to(&tmux, "%99");
-    let body = std::fs::read_to_string(&log).unwrap();
-    std::env::remove_var("PERCH_TMUX_LOG");
+    // A pane tmux no longer knows about is an error, not a wrong jump.
     assert_eq!(
-        body.lines().nth(1).unwrap(),
-        "select-window -t %99 ; select-pane -t %99"
+        perch::tui::jump_to(&tmux, "/dev/ttys004", "%99"),
+        Err("pane %99 is gone".to_string())
     );
 }

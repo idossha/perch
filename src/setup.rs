@@ -327,7 +327,7 @@ pub fn doctor(paths: &Paths) -> Doctor {
     let perch_conf = paths.perch_tmux_conf();
     let source_line = format!("source-file {}", perch_conf.display());
     let tmux_binding = fs::read_to_string(&perch_conf)
-        .map(|s| s.contains("perch tui"))
+        .map(|s| s.contains("perch open --client"))
         .unwrap_or(false);
     let tmux_sourced = fs::read_to_string(&paths.tmux_conf)
         .map(|s| s.lines().any(|l| l.trim() == source_line))

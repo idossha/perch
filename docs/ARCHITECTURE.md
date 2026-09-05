@@ -137,20 +137,71 @@ an `osascript` banner on macOS. Subagent events are not parent transitions and
 never cue. Nothing is written to the window list: perch owns a corner of the
 screen for three seconds and nothing else.
 
-`prefix + N` runs `perch next` and `Enter` in the dashboard runs the same
-`tui::jump_to`, which moves the *calling* client: `switch-client -t <session of
-the pane>` (resolved from `list-panes`), then `select-window` and `select-pane`
-by pane id, never by name. `switch-client` from inside a `display-popup`
-targets the popup's own client, which is the one the user is sitting at.
+## Navigation contract
 
-Those commands go through `Tmux::run`, which *waits*; only the cue uses
-`Tmux::batch`, which spawns and abandons. A client move must never be
-abandoned: the popup closes the moment the TUI returns, and its pty takes any
-un-waited child with it.
+Navigation is the product. These rules are not defaults; they are the contract.
 
-Under `PERCH_NO_TMUX=1`, `PERCH_TMUX_LOG=<file>` records each invocation as one
-line, which is how the cue is tested; `PERCH_FAKE_CLIENTS` stands in for the
-client list.
+**One primitive.** Every client-moving command is exactly
+
+```
+tmux switch-client -c <client_name> -t <pane_id>
+```
+
+which moves that client's session, window and pane in one atomic call. There is
+no `select-window`, no `select-pane`, no session name and no bare command
+anywhere in perch. `Tmux::jump(client, pane)` is the only API that moves a
+client.
+
+**The client is always explicit.** A tmux command without `-c` picks a "current
+client" by heuristic — tty match, else most recent activity — which is exactly
+how a jump issued from a popup's pty, or with two clients attached, sends the
+user to the wrong screen. So every command that can move a client takes
+`--client`: `perch tui --client <name>`, `perch next --client <name>`, and
+`perch open --client <name>`.
+
+`display-popup` does **not** expand `#{…}` formats in its shell-command
+(verified on tmux 3.6a); `run-shell` and key bindings **do**. A popup can
+therefore only know its client if a launcher passes it in, which is what
+`perch open` is for:
+
+```
+tmux display-popup -c <client> -E -w 85% -h 75% -- <perch> tui --client <client>
+```
+
+and the bindings are
+
+```
+bind g run-shell 'perch open --client "#{client_name}"'
+bind N run-shell 'perch next --client "#{client_name}"'
+```
+
+If `--client` is missing, perch falls back to `tmux display -p
+'#{client_name}'` and prints a one-line warning to stderr, so the guess is
+visible in logs rather than silent.
+
+**Jumps are synchronous and checked.** `Tmux::run_checked` waits for tmux and
+reports its exit status; only the hook's cue uses the fire-and-forget
+`Tmux::batch`. A client move must never be abandoned: the popup closes the
+moment the TUI returns, and its pty takes any un-waited child with it. Before
+jumping, the pane is confirmed present in `list-panes`. If it is gone, or tmux
+returns non-zero, the dashboard shows an inline error line — `pane %N is gone` —
+and refreshes **instead of exiting**. Only a successful jump closes the popup,
+and then `perch seen` runs on the destination pane.
+
+**Selection is keyed by identity, never by row index.** `App::selected` is an
+`Option<Selection { pane, child }>`; the row index is derived at render time.
+The board reorders constantly — a group jumps to the top the instant one of its
+panes needs input — so a stored index would quietly come to mean a different
+agent, which is the other half of "Enter sent me to the wrong pane". A refresh
+never moves the selection to another pane; if the selected pane disappears the
+cursor falls to the nearest row. `App::jump_target()` returns the pane id for
+the selection, resolving a subagent row to its parent pane.
+
+`perch next` picks the oldest `needs_input`, else the oldest `done`, by `since`;
+it prints the pane id, jumps, and exits 1 with `nothing waiting` when there is
+nothing to go to.
+
+Under `PERCH_DEBUG=1` every jump logs its exact tmux argv to stderr.
 
 ## Codex hook trust
 
@@ -205,8 +256,8 @@ never wrong about liveness in the direction of claiming a dead pane is alive.
    the only writer on the hot path.
 2. **No session ownership.** perch never creates, kills, resizes or attaches a
    pane, session or worktree. The only tmux writes are `set-option -p
-   @perch_state` on a pane and `select-window`/`select-pane` when the user asks
-   to jump.
+   @perch_state` on a pane and `switch-client -c <client> -t <pane>` when the
+   user asks to jump.
 3. **No scraping.** Pane text and status-bar output are never parsed. State
    comes only from harness events. `watch_commands` exists in the config but
    drives no reading of pane content.
@@ -232,6 +283,8 @@ command can be neutered without config.
 | `PERCH_NO_TMUX=1` | use `NullTmux` (empty pane list, no tmux writes) |
 | `PERCH_TMUX_LOG` | with `PERCH_NO_TMUX`, record each tmux invocation to a file |
 | `PERCH_FAKE_CLIENTS` | with `PERCH_NO_TMUX`, the client list the cue uses |
+| `PERCH_FAKE_JUMP_FAIL=1` | with `PERCH_NO_TMUX`, every checked tmux call reports failure |
+| `PERCH_DEBUG=1` | log each jump's exact tmux argv to stderr |
 | `PERCH_HOME` | home directory detection and every default path resolve against |
 | `PERCH_NO_PATH_PROBE=1` | never probe `PATH` when detecting a harness |
 | `PERCH_CLAUDE_SETTINGS` | target file for `perch install claude` |

@@ -328,8 +328,10 @@ pub fn backup_path(path: &Path) -> PathBuf {
 
 pub const TMUX_SNIPPET: &str = "\
 # perch — managed by `perch install tmux`
-bind g display-popup -E -w 85% -h 75% 'perch tui'
-bind N run-shell 'perch next'
+# `run-shell` and key bindings expand #{...}; `display-popup` does not, so the
+# launcher is what tells perch which client to move.
+bind g run-shell 'perch open --client \"#{client_name}\"'
+bind N run-shell 'perch next --client \"#{client_name}\"'
 # Looking at a finished pane marks it seen: done -> idle.
 # Indexed slots so your own hooks in these events are left alone.
 # (`pane-focus-in` never fires on tmux 3.6 here, so window/pane/session
@@ -457,9 +459,12 @@ mod tests {
     }
 
     #[test]
-    fn tmux_snippet_has_the_popup_binding() {
-        assert!(TMUX_SNIPPET.contains("bind g display-popup -E -w 85% -h 75% 'perch tui'"));
-        assert!(TMUX_SNIPPET.contains("bind N run-shell 'perch next'"));
+    fn tmux_snippet_binds_through_run_shell_with_an_explicit_client() {
+        // A binding expands `#{client_name}`; `display-popup` would not, so the
+        // popup must be opened by `perch open`, never bound directly.
+        assert!(TMUX_SNIPPET.contains("bind g run-shell 'perch open --client \"#{client_name}\"'"));
+        assert!(TMUX_SNIPPET.contains("bind N run-shell 'perch next --client \"#{client_name}\"'"));
+        assert!(!TMUX_SNIPPET.contains("bind g display-popup"));
         assert!(TMUX_SNIPPET.contains("after-select-window[42]"));
         assert!(TMUX_SNIPPET.contains("after-select-pane[42]"));
         assert!(TMUX_SNIPPET.contains("client-session-changed[42]"));

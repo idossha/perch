@@ -117,7 +117,7 @@ fn setup_wires_present_harnesses_skips_absent_and_is_idempotent() {
     let perch_conf = h.join(".config/perch/perch.tmux.conf");
     assert!(std::fs::read_to_string(&perch_conf)
         .unwrap()
-        .contains("perch tui"));
+        .contains("perch open --client"));
     let tmux_conf = std::fs::read_to_string(h.join(".tmux.conf")).unwrap();
     assert!(tmux_conf.starts_with(TMUX_BEFORE), "{tmux_conf}");
     assert!(tmux_conf.contains(&format!("source-file {}", perch_conf.display())));

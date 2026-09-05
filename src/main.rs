@@ -64,12 +64,27 @@ enum Cmd {
         #[arg(long, value_enum, default_value = "plain")]
         format: StatusFormat,
     },
-    /// Jump the current client to the oldest waiting pane.
-    Next,
+    /// Jump a client to the oldest waiting pane.
+    Next {
+        /// The client to move. Always pass it: `#{client_name}` from a binding.
+        #[arg(long)]
+        client: Option<String>,
+    },
     /// Mark a pane as seen: `done` becomes `idle` and its flag clears.
     Seen { pane: String },
-    /// The dashboard (run inside `tmux display-popup`).
-    Tui,
+    /// The dashboard (run inside `tmux display-popup`; see `perch open`).
+    Tui {
+        /// The client Enter moves. `display-popup` cannot expand `#{…}`, so
+        /// the launcher has to pass it in.
+        #[arg(long)]
+        client: Option<String>,
+    },
+    /// Open the dashboard in a popup on a client.
+    Open {
+        /// The client to draw on and to move. Pass `#{client_name}`.
+        #[arg(long)]
+        client: Option<String>,
+    },
     /// Draw a bottom-right toast on every attached client.
     ///
     /// `perch toast test` shows a sample so you can check the placement.
@@ -170,12 +185,16 @@ fn dispatch(cmd: Cmd) -> anyhow::Result<()> {
             nudge_stderr();
             cmd_status(format)
         }
-        Cmd::Next => cmd_next(),
+        Cmd::Next { client } => cmd_next(client.as_deref()),
         Cmd::Seen { pane } => {
             hook::seen(&pane);
             Ok(())
         }
-        Cmd::Tui => tui::run(tmux::current().as_ref()),
+        Cmd::Tui { client } => {
+            let client = require_client(client.as_deref())?;
+            tui::run(tmux::current().as_ref(), &client)
+        }
+        Cmd::Open { client } => cmd_open(client.as_deref()),
         Cmd::Toast { kind, text } => {
             let Some(kind) = toast::Kind::parse(&kind) else {
                 anyhow::bail!("unknown toast kind: {kind} (done | needs_input | test)");
@@ -329,18 +348,60 @@ fn cmd_status(format: StatusFormat) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_next() -> anyhow::Result<()> {
+/// The client for a client-moving command, or a hard error.
+fn require_client(explicit: Option<&str>) -> anyhow::Result<String> {
+    tmux::resolve_client(explicit)
+        .ok_or_else(|| anyhow::anyhow!("{}", r##"no client: pass --client "#{client_name}""##))
+}
+
+/// Draw the dashboard on one client's screen.
+///
+/// The popup is what makes the client knowable: `display-popup` does not expand
+/// `#{…}` in its shell-command, so the launcher resolves the client and passes
+/// it to the TUI as an argument.
+fn cmd_open(client: Option<&str>) -> anyhow::Result<()> {
+    let client = require_client(client)?;
+    let exe = std::env::current_exe()?;
+    let cmd: Vec<String> = vec![
+        "display-popup".into(),
+        "-c".into(),
+        client.clone(),
+        "-E".into(),
+        "-w".into(),
+        "85%".into(),
+        "-h".into(),
+        "75%".into(),
+        "--".into(),
+        exe.to_string_lossy().into_owned(),
+        "tui".into(),
+        "--client".into(),
+        client,
+    ];
+    if tmux::debug() {
+        eprintln!("perch: tmux {}", cmd.join(" "));
+    }
+    if !tmux::current().run_checked(&[cmd]) {
+        anyhow::bail!("tmux refused to open the popup");
+    }
+    Ok(())
+}
+
+/// Jump a client to the oldest thing waiting on the human.
+///
+/// `needs_input` before `done`, oldest `since` first — the same order the
+/// dashboard's `n` uses.
+fn cmd_next(client: Option<&str>) -> anyhow::Result<()> {
     let t = tmux::current();
     let recs = store::snapshot(t.as_ref());
-    let Some(target) = recs
-        .iter()
-        .find(|r| matches!(r.state, State::NeedsInput | State::Done))
-    else {
-        println!("nothing waiting");
-        return Ok(());
+    let oldest = |want: State| {
+        recs.iter()
+            .filter(|r| r.state == want)
+            .min_by(|a, b| a.since.cmp(&b.since))
+    };
+    let Some(target) = oldest(State::NeedsInput).or_else(|| oldest(State::Done)) else {
+        anyhow::bail!("nothing waiting");
     };
     println!("{}", target.pane);
-    // Moves the client (session first, then by pane id) and marks it seen.
-    tui::jump_to(t.as_ref(), &target.pane);
-    Ok(())
+    let client = require_client(client)?;
+    tui::jump_to(t.as_ref(), &client, &target.pane).map_err(|e| anyhow::anyhow!(e))
 }

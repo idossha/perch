@@ -106,8 +106,9 @@ perch install tmux --apply
 perch hook <claude|codex|pi>          read a hook payload on stdin, update this pane
 perch list [--json]                   snapshot of every tracked pane
 perch status [--format plain|tmux]    one-line summary for the status bar
-perch next                            focus the oldest waiting pane
-perch tui                             the dashboard
+perch next --client <name>            jump a client to the oldest waiting pane
+perch open --client <name>            open the dashboard in a popup on a client
+perch tui --client <name>             the dashboard itself
 perch sound test <event>              play the sound for done | needs_input | error
 perch toast <kind> [text...]          draw a toast; `perch toast test` shows a sample
 perch seen <pane>                     mark a pane seen: done -> idle
@@ -123,8 +124,12 @@ perch uninstall [--dry-run] [--keep-state]
   `--json` prints the full records.
 - `status --format plain` prints e.g. `⚑2 ▶1 ✓1` (waiting, working, done);
   `--format tmux` adds tmux colour escapes for `status-right`.
-- `next` prints the pane id of the oldest `needs_input`/`done` pane and moves
-  the current client to it, or prints `nothing waiting`.
+- `next` prints the pane id of the oldest `needs_input` pane (else the oldest
+  `done`) and moves the named client to it; it exits 1 with `nothing waiting`
+  when there is nothing to go to.
+- `open` draws the dashboard as a popup on one client and passes that client's
+  name to `perch tui`, which is the only way the popup can know which client to
+  move. `prefix + g` runs it for you.
 - `toast` draws one borderless one-line popup in the bottom-right corner of
   every attached client — green `✓` for `done`, red `⚑` for `needs_input`. It
   fades out over its last 600 ms and disappears; the first key you press
@@ -137,7 +142,8 @@ perch uninstall [--dry-run] [--keep-state]
 
 ## TUI keys
 
-Run it from the popup binding (`prefix + g`) or directly with `perch tui`.
+Run it from the popup binding (`prefix + g`) or directly with
+`perch open --client "$(tmux display -p '#{client_name}')"`.
 Rows are grouped by project, the groups ordered by urgency, and each state has
 a glyph as well as a colour so the board reads without colour: `⚑` needs_input,
 `✓` done, `▶` working, `…` starting, `·` idle, `✕` ended. Ended panes are
@@ -149,15 +155,29 @@ lands on its parent pane.
 |---|---|
 | `j` / `k` (or ↓ / ↑) | move the cursor |
 | `Enter` | jump to the selected pane and exit |
+| `gg` / `G` | first / last row |
 | `n` | select the oldest waiting pane |
 | `m` | toggle global mute |
 | `x` | dismiss a `done` pane back to `idle` |
 | `e` | show or hide `ended` panes |
 | `g` | grouped by project ⇄ flat, newest change first |
-| `?` | key help line |
+| `?` | help overlay (any key closes it) |
 | `r` | refresh now |
 | `S` | run `perch setup` (shown as a banner until perch is wired) |
 | `q` / `Esc` | quit |
+
+### Navigation guarantees
+
+- Every jump is one `tmux switch-client -c <client> -t <pane_id>` — the client
+  is always named, so a second attached client or a popup's own pty can never
+  send you to the wrong screen, and the pane is addressed by id, so a duplicate
+  window or session name cannot either.
+- The cursor is keyed by pane id, not by row number. The board reorders itself
+  as agents change state; the selection stays on the agent you picked.
+- A jump is waited on and checked. If the pane is gone, the dashboard says
+  `pane %N is gone` and stays open instead of exiting or moving you somewhere
+  else. Only a real move closes the popup.
+- `PERCH_DEBUG=1` prints each jump's exact tmux command to stderr.
 
 The view refreshes from disk every second. The `g` and `e` choices are
 remembered in `~/.local/state/perch/tui.json`. The palette is `dark` by

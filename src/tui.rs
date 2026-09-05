@@ -198,10 +198,27 @@ pub fn project_of(rec: &PaneRecord) -> String {
     "(no project)".to_string()
 }
 
+/// What the cursor is on, keyed by identity rather than by row index.
+///
+/// A refresh reorders rows freely (a group jumps to the top the moment one of
+/// its panes needs input); a row index would silently point at a different
+/// agent, which is how "Enter sent me to the wrong pane" happens.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Selection {
+    pub pane: String,
+    /// The subagent id, when the cursor is on a child row.
+    pub child: Option<String>,
+}
+
 pub struct App {
     pub records: Vec<PaneRecord>,
-    /// Index into [`App::rows`], not into `records`.
-    pub selected: usize,
+    /// The pane (and child) under the cursor; the row index is derived.
+    pub selected: Option<Selection>,
+    /// Last row index the cursor sat on, so a vanished pane falls to a
+    /// neighbouring row rather than to the top of the board.
+    last_row: usize,
+    /// A failed jump, shown on its own line until the next action.
+    pub error: Option<String>,
     pub muted: bool,
     /// Detected harnesses with no perch hook, shown as a top banner.
     pub unwired: Vec<String>,
@@ -218,7 +235,9 @@ impl App {
     pub fn with_records(records: Vec<PaneRecord>) -> Self {
         App {
             records,
-            selected: 0,
+            selected: None,
+            last_row: 0,
+            error: None,
             muted: false,
             unwired: Vec::new(),
             grouped: true,
@@ -245,7 +264,7 @@ impl App {
         } else {
             Vec::new()
         };
-        app.selected = 0;
+        app.normalize();
         app
     }
 
@@ -348,58 +367,125 @@ impl App {
             .collect()
     }
 
+    /// The identity of whatever is on `row`, or `None` for a header or note.
+    pub fn selection_at(&self, row: &RowKind) -> Option<Selection> {
+        match row {
+            RowKind::Pane(i) => Some(Selection {
+                pane: self.records.get(*i)?.pane.clone(),
+                child: None,
+            }),
+            RowKind::Child(i, ci) => {
+                let rec = self.records.get(*i)?;
+                Some(Selection {
+                    pane: rec.pane.clone(),
+                    child: Some(rec.children.get(*ci)?.id.clone()),
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// Where the selection currently sits in `rows`, if it is still on screen.
+    pub fn selected_row(&self, rows: &[RowKind]) -> Option<usize> {
+        let want = self.selected.as_ref()?;
+        rows.iter()
+            .position(|r| self.selection_at(r).as_ref() == Some(want))
+    }
+
+    /// Row index for rendering; falls back to the remembered row.
+    pub fn cursor_row(&self, rows: &[RowKind]) -> usize {
+        self.selected_row(rows).unwrap_or(self.last_row)
+    }
+
+    fn select_row(&mut self, rows: &[RowKind], row: usize) {
+        self.last_row = row;
+        self.selected = rows.get(row).and_then(|r| self.selection_at(r));
+    }
+
     /// Move the cursor by `delta` selectable rows, skipping headers and notes.
     pub fn move_by(&mut self, delta: isize) {
         let rows = self.rows();
         let sel = self.selectable_positions(&rows);
         if sel.is_empty() {
-            self.selected = 0;
+            self.selected = None;
+            self.last_row = 0;
             return;
         }
-        let cur = sel.iter().position(|p| *p == self.selected).unwrap_or(0) as isize;
+        let here = self.cursor_row(&rows);
+        let cur = sel.iter().position(|p| *p == here).unwrap_or(0) as isize;
         let next = (cur + delta).rem_euclid(sel.len() as isize) as usize;
-        self.selected = sel[next];
+        self.select_row(&rows, sel[next]);
     }
 
-    /// Put the cursor on the first selectable row if it is not on one already.
+    /// Jump the cursor to the first (`-1`) or last (`1`) selectable row.
+    pub fn move_to_edge(&mut self, last: bool) {
+        let rows = self.rows();
+        let sel = self.selectable_positions(&rows);
+        let Some(row) = (if last { sel.last() } else { sel.first() }).copied() else {
+            self.selected = None;
+            return;
+        };
+        self.select_row(&rows, row);
+    }
+
+    /// Put the cursor on a real row: the same one if it is still there, else
+    /// the nearest selectable row to where it was.
     pub fn normalize(&mut self) {
         let rows = self.rows();
         let sel = self.selectable_positions(&rows);
-        if !sel.contains(&self.selected) {
-            self.selected = sel.first().copied().unwrap_or(0);
+        if sel.is_empty() {
+            self.selected = None;
+            self.last_row = 0;
+            return;
         }
+        if let Some(row) = self.selected_row(&rows) {
+            self.last_row = row;
+            return;
+        }
+        let here = self.last_row;
+        let nearest = sel
+            .iter()
+            .copied()
+            .min_by_key(|p| p.abs_diff(here))
+            .unwrap_or(sel[0]);
+        self.select_row(&rows, nearest);
     }
 
     /// The record under the cursor; a subagent row resolves to its pane.
     pub fn current(&self) -> Option<&PaneRecord> {
-        let rows = self.rows();
-        rows.get(self.selected)
-            .and_then(|r| r.record())
-            .and_then(|i| self.records.get(i))
+        let want = &self.selected.as_ref()?.pane;
+        self.records.iter().find(|r| &r.pane == want)
     }
 
-    /// Row index of the oldest pane waiting on the human (needs_input, done).
-    pub fn next_waiting(&self) -> Option<usize> {
-        let rows = self.rows();
-        rows.iter().enumerate().position(|(_, r)| match r {
-            RowKind::Pane(i) => matches!(self.records[*i].state, State::NeedsInput | State::Done),
-            _ => false,
-        })
+    /// The pane id `Enter` would move the client to — a child jumps to its
+    /// parent pane, because a subagent has no pane of its own.
+    pub fn jump_target(&self) -> Option<String> {
+        self.selected.as_ref().map(|s| s.pane.clone())
     }
 
-    /// Replace the record list, keeping the cursor on the same pane if it lives.
+    /// The oldest pane waiting on the human: `needs_input` first, then `done`.
+    pub fn next_waiting(&self) -> Option<Selection> {
+        for want in [State::NeedsInput, State::Done] {
+            let oldest = self
+                .records
+                .iter()
+                .filter(|r| r.state == want)
+                .min_by(|a, b| a.since.cmp(&b.since));
+            if let Some(r) = oldest {
+                return Some(Selection {
+                    pane: r.pane.clone(),
+                    child: None,
+                });
+            }
+        }
+        None
+    }
+
+    /// Replace the record list. The selection is by identity, so a reorder
+    /// cannot move it to another pane; only a pane that is gone moves it.
     pub fn refresh(&mut self, records: Vec<PaneRecord>) {
-        let keep = self.current().map(|r| r.pane.clone());
         self.records = records;
         self.tick = self.tick.wrapping_add(1);
-        let rows = self.rows();
-        self.selected = keep
-            .and_then(|p| {
-                rows.iter().position(|r| {
-                    matches!(r, RowKind::Pane(i) if self.records.get(*i).map(|x| &x.pane) == Some(&p))
-                })
-            })
-            .unwrap_or(0);
         self.normalize();
     }
 }
@@ -637,13 +723,111 @@ fn child_line(
     ])
 }
 
+/// The help overlay's contents: sections of aligned `key -> action` pairs.
+pub const HELP_SECTIONS: [(&str, &[(&str, &str)]); 3] = [
+    (
+        "Navigate",
+        &[
+            ("j / k  ↓ ↑", "move"),
+            ("gg / G", "top / bottom"),
+            ("Enter", "jump to pane"),
+            ("n", "next waiting"),
+        ],
+    ),
+    (
+        "View",
+        &[
+            ("g", "grouped / flat"),
+            ("e", "show ended"),
+            ("r", "refresh"),
+            ("?", "close"),
+        ],
+    ),
+    (
+        "Act",
+        &[
+            ("x", "dismiss done -> idle"),
+            ("m", "mute"),
+            ("S", "setup"),
+            ("q", "quit"),
+        ],
+    ),
+];
+
+/// One line per state: glyph, name and what it actually means.
+pub const HELP_LEGEND: [(State, &str); 5] = [
+    (State::Working, "a turn is in progress"),
+    (
+        State::NeedsInput,
+        "a real permission or question is blocking the agent",
+    ),
+    (State::Done, "finished while you were elsewhere"),
+    (State::Idle, "finished and seen"),
+    (State::Ended, "the pane or session is gone"),
+];
+
+/// Centre a `w` x `h` box inside `area`, shrinking to fit.
+fn centered(area: ratatui::layout::Rect, w: u16, h: u16) -> ratatui::layout::Rect {
+    let w = w.min(area.width);
+    let h = h.min(area.height);
+    ratatui::layout::Rect {
+        x: area.x + (area.width - w) / 2,
+        y: area.y + (area.height - h) / 2,
+        width: w,
+        height: h,
+    }
+}
+
+fn help_overlay(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let t = &app.theme;
+    let mut lines: Vec<Line> = Vec::new();
+    for (title, keys) in HELP_SECTIONS {
+        lines.push(Line::from(Span::styled(
+            title.to_string(),
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+        )));
+        for (key, action) in keys {
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {key:<12}"), Style::default().fg(t.text)),
+                Span::styled((*action).to_string(), Style::default().fg(t.dim)),
+            ]));
+        }
+    }
+    lines.push(Line::from(""));
+    for (state, meaning) in HELP_LEGEND {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {} {:<12}", state_glyph(state, 0), state.as_str()),
+                t.state_style(state),
+            ),
+            Span::styled(meaning.to_string(), Style::default().fg(t.dim)),
+        ]));
+    }
+    let h = (lines.len() as u16 + 2).max(18);
+    let rect = centered(area, 60, h);
+    f.render_widget(ratatui::widgets::Clear, rect);
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(t.accent))
+                .title(Span::styled(
+                    "help — any key closes",
+                    Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+                )),
+        ),
+        rect,
+    );
+}
+
 pub fn render(f: &mut Frame, app: &App, now: DateTime<Utc>) {
     let banner = u16::from(!app.unwired.is_empty());
-    let help = 1 + u16::from(app.show_help);
+    let err = u16::from(app.error.is_some());
     let areas = Layout::vertical([
         Constraint::Length(banner),
         Constraint::Min(3),
-        Constraint::Length(help),
+        Constraint::Length(err),
+        Constraint::Length(1),
     ])
     .split(f.area());
     let t = &app.theme;
@@ -669,9 +853,16 @@ pub fn render(f: &mut Frame, app: &App, now: DateTime<Utc>) {
     let msg_w = inner_w.saturating_sub(fixed).max(1);
 
     let rows = app.rows();
+    let cursor_row = app.cursor_row(&rows);
     let mut lines: Vec<Line> = vec![header_line(t, msg_w)];
+    if rows.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  no agents yet — start claude/codex/pi in a tmux pane",
+            Style::default().fg(t.dim),
+        )));
+    }
     for (n, row) in rows.iter().enumerate() {
-        let selected = n == app.selected;
+        let selected = n == cursor_row;
         lines.push(match row {
             RowKind::Header { project, members } => Line::from(vec![
                 Span::styled(
@@ -691,7 +882,7 @@ pub fn render(f: &mut Frame, app: &App, now: DateTime<Utc>) {
 
     // Scroll so the cursor line stays on screen.
     let view = areas[1].height.saturating_sub(2) as usize;
-    let cursor = app.selected + 1;
+    let cursor = cursor_row + 1;
     let offset = if view > 0 && cursor >= view {
         cursor + 1 - view
     } else {
@@ -709,27 +900,49 @@ pub fn render(f: &mut Frame, app: &App, now: DateTime<Utc>) {
     );
     f.render_widget(table, areas[1]);
 
-    let mute = if app.muted { "muted" } else { "sound on" };
-    let mode = if app.grouped { "grouped" } else { "flat" };
-    let mut foot = vec![Line::from(vec![
-        Span::styled(
-            "j/k move  Enter jump  n next  m mute  x dismiss  e ended  g group  r refresh  ? help  q quit  [",
-            Style::default().fg(t.dim),
-        ),
-        Span::styled(format!("{mute} · {mode}"), Style::default().fg(t.accent)),
-        Span::styled("]", Style::default().fg(t.dim)),
-    ])];
-    if app.show_help {
-        foot.push(Line::from(Span::styled(
-            "keys: j/k down/up  Enter jump to pane  n next waiting  m mute  x dismiss done  e show/hide ended  g grouped/flat  r refresh  S setup  q quit",
-            Style::default().fg(t.dim),
-        )));
+    if err == 1 {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                app.error.clone().unwrap_or_default(),
+                Style::default()
+                    .fg(t.needs_input)
+                    .add_modifier(Modifier::BOLD),
+            ))),
+            areas[2],
+        );
     }
-    f.render_widget(Paragraph::new(foot), areas[2]);
+
+    f.render_widget(Paragraph::new(footer_line(app, areas[3].width)), areas[3]);
+
+    if app.show_help {
+        help_overlay(f, app, areas[1]);
+    }
+}
+
+/// The footer: the four keys that matter, and the board's status, right-aligned.
+///
+/// One line, always. Everything else lives behind `?`.
+fn footer_line(app: &App, width: u16) -> Line<'static> {
+    let t = &app.theme;
+    let keys = "Enter jump   n next   ? help   q quit";
+    let status = format!(
+        "[{}] [{}] {} panes",
+        if app.muted { "muted" } else { "sound on" },
+        if app.grouped { "grouped" } else { "flat" },
+        app.records.len()
+    );
+    let pad = (width as usize)
+        .saturating_sub(keys.chars().count() + status.chars().count())
+        .max(1);
+    Line::from(vec![
+        Span::styled(keys.to_string(), Style::default().fg(t.dim)),
+        Span::raw(" ".repeat(pad)),
+        Span::styled(status, Style::default().fg(t.accent)),
+    ])
 }
 
 /// Run the dashboard until the user quits or jumps.
-pub fn run(tmux: &dyn Tmux) -> Result<()> {
+pub fn run(tmux: &dyn Tmux, client: &str) -> Result<()> {
     let mut app = App::new(store::snapshot(tmux));
     app.normalize();
 
@@ -738,7 +951,7 @@ pub fn run(tmux: &dyn Tmux) -> Result<()> {
     crossterm::execute!(out, EnterAlternateScreen)?;
     let mut term = Terminal::new(ratatui::backend::CrosstermBackend::new(out))?;
 
-    let result = event_loop(&mut term, &mut app, tmux);
+    let result = event_loop(&mut term, &mut app, tmux, client);
 
     disable_raw_mode()?;
     crossterm::execute!(term.backend_mut(), LeaveAlternateScreen)?;
@@ -746,28 +959,33 @@ pub fn run(tmux: &dyn Tmux) -> Result<()> {
     result
 }
 
-/// Move the calling client to a pane and mark it seen.
+/// Move one named client to a pane and mark that pane seen.
 ///
-/// The pane may live in another session, so its session is resolved from the
-/// live pane list and `jump` is used — `switch-client` from inside a
-/// `display-popup` targets the popup's own client, which is the one the user
-/// is sitting at. Everything runs synchronously: this returns straight into
-/// the popup closing, and a spawned tmux child would die with the pty.
-pub fn jump_to(tmux: &dyn Tmux, pane: &str) {
-    match tmux
-        .list_panes()
-        .into_iter()
-        .find(|p| p.pane == pane)
-        .map(|p| p.session)
-    {
-        Some(session) => tmux.jump(&session, pane),
-        None => tmux.focus(pane),
+/// The client is always explicit — see `Tmux::jump`. The jump is synchronous
+/// and checked; the pane is confirmed live first, so a stale record cannot
+/// send tmux (and the user) somewhere that no longer exists.
+///
+/// `Err(msg)` is a message fit to show in the dashboard.
+pub fn jump_to(tmux: &dyn Tmux, client: &str, pane: &str) -> std::result::Result<(), String> {
+    if !tmux.pane_exists(pane) {
+        return Err(format!("pane {pane} is gone"));
+    }
+    if !tmux.jump(client, pane) {
+        return Err(format!("tmux refused the jump to {pane}"));
     }
     crate::hook::seen(pane);
+    Ok(())
 }
 
-fn event_loop<B: Backend>(term: &mut Terminal<B>, app: &mut App, tmux: &dyn Tmux) -> Result<()> {
+fn event_loop<B: Backend>(
+    term: &mut Terminal<B>,
+    app: &mut App,
+    tmux: &dyn Tmux,
+    client: &str,
+) -> Result<()> {
     let mut last_refresh = Instant::now();
+    // Pending `g`, so `gg` can mean "top" while a lone `g` still toggles.
+    let mut pending_g = false;
     loop {
         term.draw(|f| render(f, app, Utc::now()))?;
 
@@ -776,13 +994,22 @@ fn event_loop<B: Backend>(term: &mut Terminal<B>, app: &mut App, tmux: &dyn Tmux
                 if k.kind != KeyEventKind::Press {
                     continue;
                 }
+                // The overlay is modal and any key closes it.
+                if app.show_help {
+                    app.show_help = false;
+                    continue;
+                }
+                let was_g = std::mem::take(&mut pending_g);
+                app.error = None;
                 match k.code {
                     KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
                     KeyCode::Char('j') | KeyCode::Down => app.move_by(1),
                     KeyCode::Char('k') | KeyCode::Up => app.move_by(-1),
+                    KeyCode::Char('G') => app.move_to_edge(true),
                     KeyCode::Char('n') => {
-                        if let Some(i) = app.next_waiting() {
-                            app.selected = i;
+                        if let Some(sel) = app.next_waiting() {
+                            app.selected = Some(sel);
+                            app.normalize();
                         }
                     }
                     KeyCode::Char('m') => app.muted = sound::toggle_mute(),
@@ -792,11 +1019,16 @@ fn event_loop<B: Backend>(term: &mut Terminal<B>, app: &mut App, tmux: &dyn Tmux
                         save_prefs(app);
                     }
                     KeyCode::Char('g') => {
-                        app.grouped = !app.grouped;
-                        app.normalize();
-                        save_prefs(app);
+                        if was_g {
+                            app.move_to_edge(false);
+                        } else {
+                            pending_g = true;
+                            app.grouped = !app.grouped;
+                            app.normalize();
+                            save_prefs(app);
+                        }
                     }
-                    KeyCode::Char('?') => app.show_help = !app.show_help,
+                    KeyCode::Char('?') => app.show_help = true,
                     KeyCode::Char('x') => {
                         if let Some(rec) = app.current() {
                             if rec.state == State::Done {
@@ -823,10 +1055,17 @@ fn event_loop<B: Backend>(term: &mut Terminal<B>, app: &mut App, tmux: &dyn Tmux
                     }
                     KeyCode::Char('r') => app.refresh(store::snapshot(tmux)),
                     KeyCode::Enter => {
-                        if let Some(rec) = app.current() {
-                            jump_to(tmux, &rec.pane.clone());
+                        if let Some(pane) = app.jump_target() {
+                            // A failed jump stays in the dashboard with the
+                            // reason on screen; only a real move closes it.
+                            match jump_to(tmux, client, &pane) {
+                                Ok(()) => return Ok(()),
+                                Err(msg) => {
+                                    app.error = Some(msg);
+                                    app.refresh(store::snapshot(tmux));
+                                }
+                            }
                         }
-                        return Ok(());
                     }
                     _ => {}
                 }

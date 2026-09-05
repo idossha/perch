@@ -51,24 +51,38 @@ pub trait Tmux {
         ]]);
     }
 
-    /// Select a pane in the client's current session.
-    fn focus(&self, pane: &str) {
-        self.run(&[
-            vec!["select-window".into(), "-t".into(), pane.into()],
-            vec!["select-pane".into(), "-t".into(), pane.into()],
-        ]);
+    /// `true` when this pane id is in the live pane list.
+    fn pane_exists(&self, pane: &str) -> bool {
+        self.list_panes().iter().any(|p| p.pane == pane)
     }
 
-    /// Move the calling client to a pane, switching session first.
+    /// Move one named client to a pane: the only jump primitive perch has.
     ///
-    /// Everything is addressed by pane id, never by name, so a duplicate
-    /// window or session name cannot send the client somewhere else.
-    fn jump(&self, session: &str, pane: &str) {
-        self.run(&[
-            vec!["switch-client".into(), "-t".into(), session.into()],
-            vec!["select-window".into(), "-t".into(), pane.into()],
-            vec!["select-pane".into(), "-t".into(), pane.into()],
-        ]);
+    /// `switch-client -c <client> -t <pane_id>` changes that client's session,
+    /// window and pane in one atomic call. Nothing else is used: a command
+    /// without `-c` picks a "current client" by heuristic (tty match, else most
+    /// recent activity), which is exactly how a jump made from a popup's pty,
+    /// or with two clients attached, sends the user to the wrong place.
+    ///
+    /// Returns whether tmux accepted it.
+    fn jump(&self, client: &str, pane: &str) -> bool {
+        let argv: Vec<String> = vec![
+            "switch-client".into(),
+            "-c".into(),
+            client.into(),
+            "-t".into(),
+            pane.into(),
+        ];
+        if debug() {
+            eprintln!("perch: tmux {}", argv.join(" "));
+        }
+        self.run_checked(&[argv])
+    }
+
+    /// Like [`Tmux::run`], reporting whether tmux exited zero.
+    fn run_checked(&self, cmds: &[Vec<String>]) -> bool {
+        self.run(cmds);
+        true
     }
 }
 
@@ -101,6 +115,12 @@ impl Tmux for NullTmux {
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string())
             .collect()
+    }
+
+    /// `PERCH_FAKE_JUMP_FAIL=1` makes every checked command report failure.
+    fn run_checked(&self, cmds: &[Vec<String>]) -> bool {
+        self.run(cmds);
+        !std::env::var("PERCH_FAKE_JUMP_FAIL").is_ok_and(|v| v == "1")
     }
 
     /// With `PERCH_TMUX_LOG=<file>`, record what would have been run — one
@@ -195,15 +215,21 @@ impl Tmux for RealTmux {
 
     /// The same invocation, waited on — see `Tmux::run`.
     fn run(&self, cmds: &[Vec<String>]) {
+        let _ = self.run_checked(cmds);
+    }
+
+    fn run_checked(&self, cmds: &[Vec<String>]) -> bool {
         if cmds.is_empty() {
-            return;
+            return true;
         }
-        let _ = Command::new("tmux")
+        Command::new("tmux")
             .args(joined(cmds))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .status();
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
     }
 }
 
@@ -232,6 +258,35 @@ pub fn parse_pane_line(line: &str) -> Option<LivePane> {
         command: it.next().unwrap_or_default().to_string(),
         pid: it.next().and_then(|s| s.parse().ok()),
     })
+}
+
+/// `true` with `PERCH_DEBUG=1`: jumps then log their exact tmux argv.
+pub fn debug() -> bool {
+    std::env::var("PERCH_DEBUG").is_ok_and(|v| v == "1")
+}
+
+/// The client every client-moving command must name.
+///
+/// `--client` is the truth; a launcher (`bind g run-shell 'perch open --client
+/// "#{client_name}"'`) always has it, because `run-shell` and key bindings
+/// expand `#{…}` formats. `display-popup` does *not* expand them in its
+/// shell-command, so a popup can only know its client because the launcher
+/// passed it in. Falling back to `display -p '#{client_name}'` is a guess when
+/// more than one client is attached, so it warns.
+pub fn resolve_client(explicit: Option<&str>) -> Option<String> {
+    if let Some(c) = explicit.map(str::trim).filter(|c| !c.is_empty()) {
+        return Some(c.to_string());
+    }
+    eprintln!("perch: no --client given; guessing the current client");
+    let out = Command::new("tmux")
+        .args(["display", "-p", "#{client_name}"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!name.is_empty()).then_some(name)
 }
 
 /// `true` unless the user disabled tmux calls for this process.
@@ -269,16 +324,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let log = dir.path().join("tmux.log");
         std::env::set_var("PERCH_TMUX_LOG", &log);
-        NullTmux::empty().jump("main", "%12");
+        NullTmux::empty().jump("/dev/ttys003", "%12");
         std::env::remove_var("PERCH_TMUX_LOG");
         assert_eq!(
             std::fs::read_to_string(&log).unwrap().trim(),
-            "switch-client -t main ; select-window -t %12 ; select-pane -t %12"
+            "switch-client -c /dev/ttys003 -t %12"
         );
     }
 
-    /// `focus` and `jump` must go through the synchronous `run`, never the
-    /// fire-and-forget `batch`: the TUI's popup dies the instant it returns.
+    /// A jump must go through the synchronous, checked `run_checked`, never
+    /// the fire-and-forget `batch`: the TUI's popup dies the instant it
+    /// returns, taking any un-waited child with it.
     struct RunOnly(std::cell::RefCell<Vec<String>>);
 
     impl Tmux for RunOnly {
@@ -299,17 +355,45 @@ mod tests {
     }
 
     #[test]
-    fn moving_the_client_is_synchronous() {
+    fn the_only_jump_primitive_is_switch_client_with_an_explicit_client() {
         let t = RunOnly(Default::default());
-        t.jump("work", "%7");
-        t.focus("%7");
+        assert!(t.jump("work", "%7"));
         assert_eq!(
             t.0.into_inner(),
-            vec![
-                "switch-client -t work ; select-window -t %7 ; select-pane -t %7".to_string(),
-                "select-window -t %7 ; select-pane -t %7".to_string(),
-            ]
+            vec!["switch-client -c work -t %7".to_string()],
+            "no select-window, no select-pane, no session name"
         );
+    }
+
+    #[test]
+    fn a_failed_jump_is_reported() {
+        std::env::set_var("PERCH_FAKE_JUMP_FAIL", "1");
+        let ok = NullTmux::empty().jump("c", "%1");
+        std::env::remove_var("PERCH_FAKE_JUMP_FAIL");
+        assert!(!ok);
+    }
+
+    #[test]
+    fn an_explicit_client_wins_without_asking_tmux() {
+        assert_eq!(
+            resolve_client(Some("/dev/ttys009")).as_deref(),
+            Some("/dev/ttys009")
+        );
+    }
+
+    #[test]
+    fn pane_existence_comes_from_the_live_list() {
+        let t = NullTmux {
+            panes: vec![LivePane {
+                pane: "%3".into(),
+                session: "a".into(),
+                window: "0".into(),
+                command: "claude".into(),
+                pid: None,
+            }],
+        };
+        assert!(t.pane_exists("%3"));
+        assert!(!t.pane_exists("%4"));
     }
 
     #[test]

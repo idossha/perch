@@ -498,7 +498,7 @@ fn install_tmux_writes_the_popup_binding_and_prints_the_source_line() {
     assert!(report.contains("source-file"), "{report}");
 
     let written = std::fs::read_to_string(dir.path().join("config/perch.tmux.conf")).unwrap();
-    assert!(written.contains("bind g display-popup -E -w 85% -h 75% 'perch tui'"));
+    assert!(written.contains(r##"bind g run-shell 'perch open --client "#{client_name}"'"##));
     // Without --apply the user's tmux.conf is untouched.
     assert_eq!(
         std::fs::read_to_string(&tmux_conf).unwrap(),
