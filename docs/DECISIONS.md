@@ -149,3 +149,27 @@ accumulate; they are timestamped, never overwritten, and never cleaned up.
 
 **Revisit if** the marker becomes unreliable — at which point uninstall should
 refuse to remove keys rather than guess.
+
+## 8. perch writes codex's hook trust records at install time — 2026-09-05
+
+**Decision.** `perch install codex` (and `perch setup`) computes codex's own
+hook hash for each perch handler and writes
+`[hooks.state."<hooks.json>:<label>:<group>:<handler>"] trusted_hash` into
+`~/.codex/config.toml`, exactly as accepting the prompt in the codex TUI would.
+`uninstall` removes those keys; `doctor` recomputes them and reports
+`trust: yes/no`.
+
+**Why.** Codex silently refuses to run an untrusted hook. Without the record,
+`perch setup` reports success, `doctor` reports "hooked", and nothing ever
+appears in the dashboard until the user happens to open codex, notice a prompt
+and accept it. Writing the record is the only way for one command to leave a
+working install, and it is a record the user is being asked for anyway.
+
+**Cost.** perch reproduces an undocumented hash recipe from codex's source; if
+codex changes the canonical form, the records go stale and codex re-prompts —
+loud, not silent. The keys carry file indices, so editing `hooks.json` requires
+another `perch setup`. Two unit tests pin the recipe against hashes taken from
+a real accepted config.
+
+**Revisit if** codex publishes a command to trust a hook non-interactively, or
+changes the fingerprint, at which point perch should call it instead.

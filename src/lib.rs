@@ -9,4 +9,5 @@ pub mod setup;
 pub mod sound;
 pub mod store;
 pub mod tmux;
+pub mod trust;
 pub mod tui;

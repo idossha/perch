@@ -53,6 +53,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cargo install perch` / `cargo binstall perch`, and `install.sh`, which
   downloads the latest release and runs `perch setup` for you. Release
   workflow builds four targets on a `v*` tag and updates the tap formula.
+- `perch install codex` / `perch setup` now record perch's hooks as trusted in
+  `~/.codex/config.toml`, so codex actually runs them without you accepting a
+  prompt first. `perch doctor` reports `trust: yes/no`, `perch uninstall`
+  removes only those keys, and the rest of the file keeps its formatting.
+  Re-run `perch setup` after reordering `~/.codex/hooks.json`.
+- `PERCH_DUMP_HOOK_INPUT=<dir>` copies every raw hook payload to
+  `<dir>/<harness>-<event>-<ts>.json` for checking field mappings.
+- The codex adapter accepts `hook_event_name`/`event`,
+  `session_id`/`thread_id`/`turn_id` and
+  `last_assistant_message`/`last_message`.
 - MIT LICENSE.
 
 ### Known limitations

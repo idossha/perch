@@ -66,6 +66,8 @@ pub struct Paths {
     pub claude_settings: PathBuf,
     pub codex_dir: PathBuf,
     pub codex_hooks: PathBuf,
+    /// codex's own config, where hook trust records live.
+    pub codex_config: PathBuf,
     pub pi_dir: PathBuf,
     pub pi_ext_dir: PathBuf,
     pub tmux_conf: PathBuf,
@@ -84,6 +86,8 @@ impl Paths {
             codex_dir: home.join(".codex"),
             codex_hooks: env_path("PERCH_CODEX_HOOKS")
                 .unwrap_or_else(|| home.join(".codex/hooks.json")),
+            codex_config: env_path("PERCH_CODEX_CONFIG")
+                .unwrap_or_else(|| home.join(".codex/config.toml")),
             pi_dir: home.join(".pi/agent"),
             pi_ext_dir: env_path("PERCH_PI_EXT_DIR")
                 .unwrap_or_else(|| home.join(".pi/agent/extensions")),

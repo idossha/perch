@@ -10,7 +10,7 @@ use crate::model::{Event, ParsedEvent};
 /// Keys that may carry the event name.
 const EVENT_KEYS: &[&str] = &["hook_event_name", "event"];
 /// Keys that may carry the session id.
-const SESSION_KEYS: &[&str] = &["session_id", "thread_id"];
+const SESSION_KEYS: &[&str] = &["session_id", "thread_id", "turn_id"];
 /// Keys that may carry the final assistant message on `Stop`.
 const MESSAGE_KEYS: &[&str] = &["last_assistant_message", "last_message", "message"];
 

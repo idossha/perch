@@ -71,6 +71,37 @@ so an old record still loads; an unparseable one is skipped rather than fatal.
 Config lives separately in `~/.config/perch/config.toml`
 (`PERCH_CONFIG_DIR`), next to the generated `perch.tmux.conf`.
 
+## Codex hook trust
+
+Codex runs a hook only if `~/.codex/config.toml` records it as trusted; without
+that record the user gets an accept prompt in the TUI and perch stays silent
+until they answer it. `perch install codex` therefore writes the same record
+the prompt would have written, so setup remains one step.
+
+The key is `[hooks.state."<abs path of hooks.json>:<event_label>:<group index>:<handler index>"]`
+with `trusted_hash = "sha256:<hex>"`. The hash (`src/trust.rs`, mirroring
+codex's `hook_hash` and `version_for_toml`) is sha256 over the compact,
+recursively key-sorted JSON of one identity object per handler:
+
+```json
+{"event_name":"stop","hooks":[{"async":false,"command":"perch hook codex","timeout":10,"type":"command"}]}
+```
+
+`matcher` appears in the identity only when the group actually has the key — an
+empty matcher is a real matcher and hashes differently from none. Event labels
+are codex's snake_case names: `session_start`, `user_prompt_submit`, `stop`,
+`permission_request`, `session_end`, `subagent_start`, `subagent_stop`,
+`pre_tool_use`, `post_tool_use`, `pre_compact`, `post_compact`, `interrupt`.
+
+The indices are read from `hooks.json` as it stands after the merge, so they
+are only valid while the file keeps that order. **Re-run `perch setup` after
+reordering or editing `~/.codex/hooks.json`**; it recomputes every key and
+hash. `perch doctor` shows `trust: yes/no` for codex by recomputing them, and
+`perch uninstall` removes exactly those keys. `config.toml` is edited with
+`toml_edit`, so comments, ordering and formatting elsewhere in the file
+survive; it is backed up first and replaced atomically, and created when
+missing.
+
 ## Liveness
 
 There is no process watching for exits, so liveness is computed on every read.
@@ -122,6 +153,8 @@ command can be neutered without config.
 | `PERCH_NO_PATH_PROBE=1` | never probe `PATH` when detecting a harness |
 | `PERCH_CLAUDE_SETTINGS` | target file for `perch install claude` |
 | `PERCH_CODEX_HOOKS` | target file for `perch install codex` |
+| `PERCH_CODEX_CONFIG` | codex config holding the hook trust records |
+| `PERCH_DUMP_HOOK_INPUT` | directory to copy every raw hook payload into |
 | `PERCH_PI_EXT_DIR` | directory for `perch install pi` |
 | `PERCH_TMUX_CONF` | target file for the `source-file` line |
 

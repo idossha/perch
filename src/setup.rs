@@ -121,6 +121,7 @@ pub fn needs_nudge(paths: &Paths) -> bool {
 /// Wire every detected harness plus tmux, and write the setup marker.
 pub fn run(paths: &Paths, opts: &SetupOpts) -> Result<String> {
     let mut steps: Vec<Step> = Vec::new();
+    let mut trust_report = String::new();
 
     let harnesses: [(&'static str, bool); 3] = [
         ("claude", paths.claude_present()),
@@ -147,6 +148,11 @@ pub fn run(paths: &Paths, opts: &SetupOpts) -> Result<String> {
             _ => install::install_pi_at(&paths.pi_ext_dir, opts.dry_run, false)?,
         };
         steps.push(step_from(name, outcome, opts.dry_run));
+        if name == "codex" {
+            let entries = install::codex_trust_entries(&paths.codex_hooks);
+            trust_report = crate::trust::install(&paths.codex_config, &entries, opts.dry_run)
+                .unwrap_or_else(|e| format!("trust   {e:#}\n"));
+        }
     }
 
     if opts.wants("tmux") {
@@ -168,6 +174,7 @@ pub fn run(paths: &Paths, opts: &SetupOpts) -> Result<String> {
     }
 
     let mut out = table(&steps);
+    out.push_str(&trust_report);
     if !opts.dry_run {
         write_marker(paths, &steps)?;
         let _ = writeln!(out, "\nmarker: {}", paths.setup_marker().display());
@@ -277,6 +284,9 @@ pub struct HarnessReport {
     pub present: bool,
     pub hook: bool,
     pub file: String,
+    /// codex only: whether every perch handler is recorded as trusted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trust: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -303,6 +313,13 @@ impl Doctor {
     }
 }
 
+/// `true` when codex's config records every perch handler with the hash codex
+/// will recompute at load time.
+pub fn codex_trusted(paths: &Paths) -> bool {
+    let entries = install::codex_trust_entries(&paths.codex_hooks);
+    !entries.is_empty() && crate::trust::all_trusted(&paths.codex_config, &entries)
+}
+
 pub fn doctor(paths: &Paths) -> Doctor {
     let binary = std::env::current_exe()
         .map(|p| p.display().to_string())
@@ -325,18 +342,21 @@ pub fn doctor(paths: &Paths) -> Doctor {
             present: paths.claude_present(),
             hook: contains_perch_hook(&paths.claude_settings),
             file: paths.claude_settings.display().to_string(),
+            trust: None,
         },
         HarnessReport {
             name: "codex".into(),
             present: paths.codex_present(),
             hook: contains_perch_hook(&paths.codex_hooks),
             file: paths.codex_hooks.display().to_string(),
+            trust: Some(codex_trusted(paths)),
         },
         HarnessReport {
             name: "pi".into(),
             present: paths.pi_present(),
             hook: pi_wired(paths),
             file: paths.pi_extension().display().to_string(),
+            trust: None,
         },
     ];
     let records = fs::read_dir(paths.state_dir.join("panes"))
@@ -369,11 +389,16 @@ pub fn doctor_text(d: &Doctor) -> String {
     let _ = writeln!(out, "perch {} at {}", d.version, d.binary);
     for h in &d.harnesses {
         if h.present {
+            let trust = match h.trust {
+                Some(t) => format!("  trust: {:<3}", yn(t)),
+                None => String::new(),
+            };
             let _ = writeln!(
                 out,
-                "{:<7} found      hook: {:<3}  {}",
+                "{:<7} found      hook: {:<3}{}  {}",
                 h.name,
                 yn(h.hook),
+                trust,
                 h.file
             );
         } else {
@@ -511,6 +536,15 @@ pub fn uninstall(paths: &Paths, opts: &UninstallOpts) -> Result<String> {
         opts,
         &mut out,
     )?;
+    let trust_keys: Vec<String> = install::codex_trust_entries(&paths.codex_hooks)
+        .into_iter()
+        .map(|e| e.key)
+        .collect();
+    out.push_str(&crate::trust::uninstall(
+        &paths.codex_config,
+        &trust_keys,
+        opts.dry_run,
+    )?);
     unhook_file(
         &paths.codex_hooks,
         component(&marker, "codex"),

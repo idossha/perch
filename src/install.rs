@@ -28,7 +28,7 @@ pub const CODEX_EVENTS: &[&str] = &[
 ];
 
 /// Marker used to decide whether perch is already installed in a hook array.
-const MARKER: &str = "perch hook";
+pub const MARKER: &str = "perch hook";
 
 pub fn claude_settings_path() -> PathBuf {
     Paths::from_env().claude_settings
@@ -41,6 +41,23 @@ pub fn codex_hooks_path() -> PathBuf {
 /// Directory holding pi's TypeScript extensions.
 pub fn pi_extension_dir() -> PathBuf {
     Paths::from_env().pi_ext_dir
+}
+
+/// The codex hooks document as it stands after a merge, without writing it.
+///
+/// The merge is idempotent, so this is the file's own content once perch is
+/// installed and the file-to-be while a dry run is being reported.
+pub fn codex_merged_doc(path: &Path) -> Value {
+    let current: Value = match fs::read_to_string(path) {
+        Ok(s) if !s.trim().is_empty() => serde_json::from_str(&s).unwrap_or_else(|_| json!({})),
+        _ => json!({}),
+    };
+    merge_codex_hooks(current).settings
+}
+
+/// Trust records codex needs for perch's own handlers in that document.
+pub fn codex_trust_entries(path: &Path) -> Vec<crate::trust::TrustEntry> {
+    crate::trust::entries_for(path, &codex_merged_doc(path), MARKER)
 }
 
 pub fn tmux_conf_path() -> PathBuf {

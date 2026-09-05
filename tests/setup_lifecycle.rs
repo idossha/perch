@@ -50,6 +50,7 @@ fn perch(home: &Path, args: &[&str]) -> Output {
         .env_remove("TMUX")
         .env_remove("PERCH_CLAUDE_SETTINGS")
         .env_remove("PERCH_CODEX_HOOKS")
+        .env_remove("PERCH_CODEX_CONFIG")
         .env_remove("PERCH_PI_EXT_DIR")
         .env_remove("PERCH_TMUX_CONF")
         .env_remove("PERCH_CONFIG_DIR")
@@ -277,4 +278,69 @@ fn list_and_status_nudge_on_stderr_only() {
     assert!(perch(h, &["setup"]).status.success());
     let out = perch(h, &["status"]);
     assert_eq!(String::from_utf8_lossy(&out.stderr), "");
+}
+
+/// `perch setup` records codex's hook trust, so the user never sees the accept
+/// prompt; `doctor` reports it and `uninstall` takes only perch's own keys.
+#[test]
+fn setup_writes_codex_trust_records_and_uninstall_removes_them() {
+    let home = fake_home();
+    let h = home.path();
+    let config = h.join(".codex/config.toml");
+    std::fs::write(
+        &config,
+        "model = \"gpt-5\"\n\n[hooks.state.\"/other/hooks.json:stop:0:0\"]\ntrusted_hash = \"sha256:aa\"\n",
+    )
+    .unwrap();
+
+    assert!(perch(h, &["setup"]).status.success());
+    let body = std::fs::read_to_string(&config).unwrap();
+    let hooks = h.join(".codex/hooks.json");
+    let key = format!("{}:session_start:", hooks.display());
+    assert!(body.contains(&key), "{body}");
+    assert!(body.contains("model = \"gpt-5\""), "{body}");
+    assert!(body.contains("/other/hooks.json:stop:0:0"), "{body}");
+    // One record per perch handler: five events.
+    assert_eq!(body.matches("trusted_hash").count(), 6, "{body}");
+
+    let out = perch(h, &["doctor"]);
+    assert!(stdout(&out).contains("trust: yes"), "{}", stdout(&out));
+
+    // A second setup is a no-op on the config.
+    assert!(perch(h, &["setup"]).status.success());
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), body);
+
+    assert!(perch(h, &["uninstall", "--keep-state"]).status.success());
+    let after = std::fs::read_to_string(&config).unwrap();
+    assert!(!after.contains(&key), "{after}");
+    assert!(after.contains("/other/hooks.json:stop:0:0"), "{after}");
+    assert!(after.contains("model = \"gpt-5\""), "{after}");
+}
+
+/// The hashes perch writes are the ones codex recomputes from the file, so
+/// reordering hooks.json and re-running setup refreshes the indices.
+#[test]
+fn reordering_hooks_json_refreshes_the_indices() {
+    let home = fake_home();
+    let h = home.path();
+    assert!(perch(h, &["setup"]).status.success());
+    let hooks_path = h.join(".codex/hooks.json");
+    let mut hooks: Value = json_at(&hooks_path);
+    // Put a foreign group in front of perch's Stop handler.
+    let stop = hooks["hooks"]["Stop"].as_array_mut().unwrap();
+    stop.insert(
+        0,
+        serde_json::json!({"hooks":[{"type":"command","command":"other","timeout":10}]}),
+    );
+    std::fs::write(&hooks_path, serde_json::to_string_pretty(&hooks).unwrap()).unwrap();
+
+    // doctor now disagrees, and setup puts the right key back.
+    let out = perch(h, &["doctor"]);
+    assert!(stdout(&out).contains("trust: no"), "{}", stdout(&out));
+    assert!(perch(h, &["setup"]).status.success());
+    let body = std::fs::read_to_string(h.join(".codex/config.toml")).unwrap();
+    assert!(
+        body.contains(&format!("{}:stop:1:0", hooks_path.display())),
+        "{body}"
+    );
 }

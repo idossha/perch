@@ -67,6 +67,14 @@ pi         skipped: not found  -                              -
 tmux       installed           ~/.tmux.conf                   ~/.tmux.conf.bak-20260905...
 ```
 
+For codex, setup also records the hooks as trusted in `~/.codex/config.toml`
+(`[hooks.state."<hooks.json>:<event>:<group>:<handler>"] trusted_hash`) — the
+same thing you would get by accepting codex's prompt, without which codex
+silently skips the hook. The keys carry the handler's position in
+`hooks.json`, so **re-run `perch setup` after editing or reordering that
+file**; `perch doctor` shows `trust: yes/no`, and `perch uninstall` removes
+only perch's own keys. The rest of `config.toml` keeps its formatting.
+
 A successful run leaves `~/.config/perch/setup.json` recording the version, the
 timestamp and what it touched — which is also what tells `uninstall` which hook
 arrays were perch's to remove. Until that file exists, the TUI shows a banner
@@ -195,6 +203,14 @@ in the environment disables sound for that process. Then try
 **A pane shows `ended`.** Its tmux pane no longer exists — the shell exited or
 the pane was killed. That is the liveness rule, not a bug; the row disappears
 an hour later, or immediately after `tmux kill-pane` plus a refresh.
+
+**Nothing shows up for codex.** Run `perch doctor`: if it says `trust: no`,
+codex is refusing to run the hook. `perch setup` writes the trust record;
+after editing `~/.codex/hooks.json` by hand you need to run it again.
+
+**Checking what a harness really sends.** Set
+`PERCH_DUMP_HOOK_INPUT=~/perch-payloads` and every raw hook payload is copied
+to `<dir>/<harness>-<event>-<timestamp>.json`.
 
 **Nothing shows up at all.** Confirm the hooks merged
 (`perch install claude --dry-run` should say "already installed for every

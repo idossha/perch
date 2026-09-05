@@ -21,6 +21,7 @@ pub fn run(harness: Harness) -> anyhow::Result<()> {
     let mut buf = String::new();
     std::io::stdin().read_to_string(&mut buf)?;
     let raw: serde_json::Value = serde_json::from_str(buf.trim()).unwrap_or(json!({}));
+    dump_payload(harness, &buf);
 
     let Some(parsed) = adapters::parse(harness, &raw)? else {
         return Ok(());
@@ -55,6 +56,33 @@ pub fn run(harness: Harness) -> anyhow::Result<()> {
         tmux::current().set_pane_option(&pane, "@perch_state", rec.state.as_str());
     }
     Ok(())
+}
+
+/// Debug aid: with `PERCH_DUMP_HOOK_INPUT=<dir>`, drop every raw payload as
+/// `<dir>/<harness>-<event>-<ts>.json`, so field mappings can be checked
+/// against what a harness really sends. Best-effort and silent on failure.
+fn dump_payload(harness: Harness, body: &str) {
+    let Ok(dir) = std::env::var("PERCH_DUMP_HOOK_INPUT") else {
+        return;
+    };
+    if dir.is_empty() {
+        return;
+    }
+    let raw: serde_json::Value = serde_json::from_str(body.trim()).unwrap_or(json!({}));
+    let event = ["hook_event_name", "event"]
+        .iter()
+        .find_map(|k| raw.get(*k).and_then(|v| v.as_str()))
+        .unwrap_or("unknown")
+        .replace(|c: char| !c.is_ascii_alphanumeric(), "_");
+    let ts = Utc::now().format("%Y%m%dT%H%M%S%.3f");
+    let dir = std::path::PathBuf::from(dir);
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let _ = std::fs::write(
+        dir.join(format!("{}-{}-{}.json", harness.as_str(), event, ts)),
+        body,
+    );
 }
 
 /// Play the state's sound unless this pane sounded within the cooldown.
