@@ -81,7 +81,7 @@ tar xzf "$tmp/perch.tar.gz" -C "$tmp" || die "could not extract $name.tar.gz"
 # Never replace a working install with something that is not there.
 binary="$tmp/$name/perch"
 [ -f "$binary" ] || binary="$(find "$tmp" -type f -name perch -perm -u+x | head -n 1)"
-[ -n "$binary" ] && [ -f "$binary" ] || die "the tarball contained no perch binary"
+if [ -z "$binary" ] || [ ! -f "$binary" ]; then die "the tarball contained no perch binary"; fi
 
 mkdir -p "$INSTALL_DIR"
 chmod +x "$binary"
