@@ -83,6 +83,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `Enter` in the dashboard and `prefix + N` move the client again. The tmux
+  commands that move a client were being spawned and never waited on, so the
+  popup closed, took its pty with it and killed the child before tmux ran it.
+  Client moves are now synchronous, and `Enter` resolves the pane's session
+  from tmux so a jump out of the popup crosses sessions like `perch next`.
 - Panes no longer sit in `needs_input` when nothing is waiting. `needs_input`
   now means only a real approval or question dialog — `permission_prompt`,
   `elicitation_dialog`, `elicitation_url_dialog`, `agent_needs_input` and codex

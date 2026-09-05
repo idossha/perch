@@ -85,11 +85,9 @@ pub fn seen(pane: &str) -> bool {
     rec.state = crate::model::State::Idle;
     rec.since = store::now_rfc3339();
     let _ = store::save(&rec);
-    let t = tmux::current();
-    t.batch(&[
-        opt("-p", pane, "@perch_state", "idle"),
-        opt("-w", pane, "@perch_flag", ""),
-    ]);
+    // Synchronous: `seen` is called from the TUI's popup and from `perch
+    // next`, both of which exit immediately afterwards.
+    tmux::current().run(&[opt("-p", pane, "@perch_state", "idle")]);
     true
 }
 

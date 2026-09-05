@@ -262,3 +262,45 @@ fn project_falls_back_to_the_cwd_basename_then_a_stub() {
     assert!(out.contains("perch"), "{out}");
     assert!(out.contains("(no project)"), "{out}");
 }
+
+/// What `Enter` does: resolve the pane's session from the live pane list and
+/// move the *calling* client there, synchronously — the popup closes the
+/// instant `jump_to` returns, so anything merely spawned would be killed with
+/// the popup's pty before tmux ran it.
+#[test]
+fn enter_switches_session_then_selects_by_pane_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("tmux.log");
+    std::env::set_var("PERCH_TMUX_LOG", &log);
+    std::env::set_var("PERCH_STATE_DIR", dir.path());
+
+    let tmux = perch::tmux::NullTmux {
+        panes: vec![perch::tmux::LivePane {
+            pane: "%7".into(),
+            session: "other".into(),
+            window: "3".into(),
+            command: "claude".into(),
+            pid: None,
+        }],
+    };
+    perch::tui::jump_to(&tmux, "%7");
+    // Read before anything else can have run: the write already happened.
+    let body = std::fs::read_to_string(&log).unwrap();
+    std::env::remove_var("PERCH_TMUX_LOG");
+    std::env::remove_var("PERCH_STATE_DIR");
+
+    assert_eq!(
+        body.lines().next().unwrap(),
+        "switch-client -t other ; select-window -t %7 ; select-pane -t %7"
+    );
+
+    // A pane tmux does not know about falls back to selecting in place.
+    std::env::set_var("PERCH_TMUX_LOG", &log);
+    perch::tui::jump_to(&tmux, "%99");
+    let body = std::fs::read_to_string(&log).unwrap();
+    std::env::remove_var("PERCH_TMUX_LOG");
+    assert_eq!(
+        body.lines().nth(1).unwrap(),
+        "select-window -t %99 ; select-pane -t %99"
+    );
+}

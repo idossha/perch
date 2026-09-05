@@ -120,9 +120,16 @@ are attached. `[notify]` in the config governs it: `tmux_message` (default
 true), `duration_ms` (4000) and `desktop` (false, an `osascript` notification on
 macOS). Subagent events are not parent transitions and never cue.
 
-`prefix + N` runs `perch next`, which moves the *calling* client:
-`switch-client -t <session of the pane>`, then `select-window` and
-`select-pane` by pane id, never by name.
+`prefix + N` runs `perch next` and `Enter` in the dashboard runs the same
+`tui::jump_to`, which moves the *calling* client: `switch-client -t <session of
+the pane>` (resolved from `list-panes`), then `select-window` and `select-pane`
+by pane id, never by name. `switch-client` from inside a `display-popup`
+targets the popup's own client, which is the one the user is sitting at.
+
+Those commands go through `Tmux::run`, which *waits*; only the cue uses
+`Tmux::batch`, which spawns and abandons. A client move must never be
+abandoned: the popup closes the moment the TUI returns, and its pty takes any
+un-waited child with it.
 
 Under `PERCH_NO_TMUX=1`, `PERCH_TMUX_LOG=<file>` records each invocation as one
 line, which is how the cue is tested; `PERCH_FAKE_CLIENTS` stands in for the

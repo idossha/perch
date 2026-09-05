@@ -31,6 +31,15 @@ pub trait Tmux {
     /// process, never one per command.
     fn batch(&self, _cmds: &[Vec<String>]) {}
 
+    /// Run several tmux commands in one invocation and *wait* for them.
+    ///
+    /// Anything that moves the client must go through here: the TUI runs
+    /// inside a `display-popup`, and the moment it returns the popup's pty is
+    /// gone and a merely-spawned child is killed before tmux ever reads it.
+    fn run(&self, cmds: &[Vec<String>]) {
+        self.batch(cmds);
+    }
+
     fn set_pane_option(&self, pane: &str, name: &str, value: &str) {
         self.batch(&[vec![
             "set-option".into(),
@@ -44,7 +53,7 @@ pub trait Tmux {
 
     /// Select a pane in the client's current session.
     fn focus(&self, pane: &str) {
-        self.batch(&[
+        self.run(&[
             vec!["select-window".into(), "-t".into(), pane.into()],
             vec!["select-pane".into(), "-t".into(), pane.into()],
         ]);
@@ -55,7 +64,7 @@ pub trait Tmux {
     /// Everything is addressed by pane id, never by name, so a duplicate
     /// window or session name cannot send the client somewhere else.
     fn jump(&self, session: &str, pane: &str) {
-        self.batch(&[
+        self.run(&[
             vec!["switch-client".into(), "-t".into(), session.into()],
             vec!["select-window".into(), "-t".into(), pane.into()],
             vec!["select-pane".into(), "-t".into(), pane.into()],
@@ -176,20 +185,38 @@ impl Tmux for RealTmux {
         if cmds.is_empty() {
             return;
         }
-        let mut args: Vec<String> = Vec::new();
-        for (i, cmd) in cmds.iter().enumerate() {
-            if i > 0 {
-                args.push(";".into());
-            }
-            args.extend(cmd.iter().cloned());
-        }
         let _ = Command::new("tmux")
-            .args(&args)
+            .args(joined(cmds))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn();
     }
+
+    /// The same invocation, waited on — see `Tmux::run`.
+    fn run(&self, cmds: &[Vec<String>]) {
+        if cmds.is_empty() {
+            return;
+        }
+        let _ = Command::new("tmux")
+            .args(joined(cmds))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
+/// `[[a, b], [c]]` -> `a b ; c`, the argv of one multi-command `tmux` call.
+fn joined(cmds: &[Vec<String>]) -> Vec<String> {
+    let mut args: Vec<String> = Vec::new();
+    for (i, cmd) in cmds.iter().enumerate() {
+        if i > 0 {
+            args.push(";".into());
+        }
+        args.extend(cmd.iter().cloned());
+    }
+    args
 }
 
 pub fn parse_pane_line(line: &str) -> Option<LivePane> {
@@ -247,6 +274,41 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&log).unwrap().trim(),
             "switch-client -t main ; select-window -t %12 ; select-pane -t %12"
+        );
+    }
+
+    /// `focus` and `jump` must go through the synchronous `run`, never the
+    /// fire-and-forget `batch`: the TUI's popup dies the instant it returns.
+    struct RunOnly(std::cell::RefCell<Vec<String>>);
+
+    impl Tmux for RunOnly {
+        fn list_panes(&self) -> Vec<LivePane> {
+            Vec::new()
+        }
+        fn batch(&self, _cmds: &[Vec<String>]) {
+            panic!("a client move must not be spawned and abandoned");
+        }
+        fn run(&self, cmds: &[Vec<String>]) {
+            self.0.borrow_mut().push(
+                cmds.iter()
+                    .map(|c| c.join(" "))
+                    .collect::<Vec<_>>()
+                    .join(" ; "),
+            );
+        }
+    }
+
+    #[test]
+    fn moving_the_client_is_synchronous() {
+        let t = RunOnly(Default::default());
+        t.jump("work", "%7");
+        t.focus("%7");
+        assert_eq!(
+            t.0.into_inner(),
+            vec![
+                "switch-client -t work ; select-window -t %7 ; select-pane -t %7".to_string(),
+                "select-window -t %7 ; select-pane -t %7".to_string(),
+            ]
         );
     }
 

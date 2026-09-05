@@ -746,6 +746,26 @@ pub fn run(tmux: &dyn Tmux) -> Result<()> {
     result
 }
 
+/// Move the calling client to a pane and mark it seen.
+///
+/// The pane may live in another session, so its session is resolved from the
+/// live pane list and `jump` is used — `switch-client` from inside a
+/// `display-popup` targets the popup's own client, which is the one the user
+/// is sitting at. Everything runs synchronously: this returns straight into
+/// the popup closing, and a spawned tmux child would die with the pty.
+pub fn jump_to(tmux: &dyn Tmux, pane: &str) {
+    match tmux
+        .list_panes()
+        .into_iter()
+        .find(|p| p.pane == pane)
+        .map(|p| p.session)
+    {
+        Some(session) => tmux.jump(&session, pane),
+        None => tmux.focus(pane),
+    }
+    crate::hook::seen(pane);
+}
+
 fn event_loop<B: Backend>(term: &mut Terminal<B>, app: &mut App, tmux: &dyn Tmux) -> Result<()> {
     let mut last_refresh = Instant::now();
     loop {
@@ -804,9 +824,7 @@ fn event_loop<B: Backend>(term: &mut Terminal<B>, app: &mut App, tmux: &dyn Tmux
                     KeyCode::Char('r') => app.refresh(store::snapshot(tmux)),
                     KeyCode::Enter => {
                         if let Some(rec) = app.current() {
-                            let pane = rec.pane.clone();
-                            tmux.focus(&pane);
-                            crate::hook::seen(&pane);
+                            jump_to(tmux, &rec.pane.clone());
                         }
                         return Ok(());
                     }
