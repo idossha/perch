@@ -58,6 +58,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   prompt first. `perch doctor` reports `trust: yes/no`, `perch uninstall`
   removes only those keys, and the rest of the file keeps its formatting.
   Re-run `perch setup` after reordering `~/.codex/hooks.json`.
+- Subagents: `SubagentStart` / `SubagentStop` (and `Stop` / `Notification`
+  carrying an `agent_id`) from Claude and Codex now appear as `children` of
+  their parent pane in `perch list --json` and in the TUI, instead of being
+  dropped. They never change the pane's own state and are silent, except a
+  subagent `agent_needs_input` notification, which sounds. Finished children
+  are cleared by the next turn, or after ten minutes. `perch setup` adds the
+  two new hook entries to an existing install.
 - `PERCH_DUMP_HOOK_INPUT=<dir>` copies every raw hook payload to
   `<dir>/<harness>-<event>-<ts>.json` for checking field mappings.
 - The codex adapter accepts `hook_event_name`/`event`,

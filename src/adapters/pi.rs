@@ -22,11 +22,11 @@ pub fn parse(raw: &serde_json::Value) -> anyhow::Result<Option<ParsedEvent>> {
         _ => return Ok(None),
     };
 
-    Ok(Some(ParsedEvent {
+    Ok(Some(ParsedEvent::top_level(
         event,
-        session_id: str_field(raw, "session_id").or_else(|| str_field(raw, "thread_id")),
-        cwd: str_field(raw, "cwd"),
-    }))
+        str_field(raw, "session_id").or_else(|| str_field(raw, "thread_id")),
+        str_field(raw, "cwd"),
+    )))
 }
 
 fn str_field(raw: &serde_json::Value, key: &str) -> Option<String> {

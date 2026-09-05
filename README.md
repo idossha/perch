@@ -204,6 +204,12 @@ in the environment disables sound for that process. Then try
 the pane was killed. That is the liveness rule, not a bug; the row disappears
 an hour later, or immediately after `tmux kill-pane` plus a refresh.
 
+**A subagent is missing.** Subagents show as indented rows under their pane,
+and only while the harness reports them: they are cleared by your next prompt
+and pruned ten minutes after they finish. If none ever appear, re-run
+`perch setup` — the `SubagentStart`/`SubagentStop` hooks were added later than
+the rest.
+
 **Nothing shows up for codex.** Run `perch doctor`: if it says `trust: no`,
 codex is refusing to run the hook. `perch setup` writes the trust record;
 after editing `~/.codex/hooks.json` by hand you need to run it again.

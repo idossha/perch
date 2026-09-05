@@ -15,6 +15,8 @@ pub const CLAUDE_EVENTS: &[&str] = &[
     "Stop",
     "Notification",
     "SessionEnd",
+    "SubagentStart",
+    "SubagentStop",
 ];
 
 /// The Codex hook events perch subscribes to. Codex names `PermissionRequest`
@@ -25,6 +27,8 @@ pub const CODEX_EVENTS: &[&str] = &[
     "Stop",
     "PermissionRequest",
     "SessionEnd",
+    "SubagentStart",
+    "SubagentStop",
 ];
 
 /// Marker used to decide whether perch is already installed in a hook array.

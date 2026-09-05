@@ -15,17 +15,20 @@ const SESSION_KEYS: &[&str] = &["session_id", "thread_id", "turn_id"];
 const MESSAGE_KEYS: &[&str] = &["last_assistant_message", "last_message", "message"];
 
 pub fn parse(raw: &serde_json::Value) -> anyhow::Result<Option<ParsedEvent>> {
-    // Subagents get their own ids; perch tracks only top-level sessions.
-    if raw.get("agent_id").and_then(|v| v.as_str()).is_some() {
-        return Ok(None);
-    }
-
+    // An agent id attributes the event to a subagent of this pane's session.
+    let agent_id = first_str(raw, &["agent_id"]);
     let name = first_str(raw, EVENT_KEYS)
         .ok_or_else(|| anyhow::anyhow!("payload has no hook_event_name"))?;
 
     let event = match name.as_str() {
-        "SessionStart" => Event::SessionStart,
-        "UserPromptSubmit" => Event::UserPromptSubmit,
+        "SubagentStart" => Event::SubagentStart {
+            agent_type: first_str(raw, &["agent_type"]),
+        },
+        "SubagentStop" => Event::SubagentStop {
+            last_message: first_str(raw, MESSAGE_KEYS),
+        },
+        "SessionStart" if agent_id.is_none() => Event::SessionStart,
+        "UserPromptSubmit" if agent_id.is_none() => Event::UserPromptSubmit,
         // A Stop payload need not carry a message; the record keeps the old one.
         "Stop" => Event::Stop {
             last_message: first_str(raw, MESSAGE_KEYS),
@@ -33,8 +36,8 @@ pub fn parse(raw: &serde_json::Value) -> anyhow::Result<Option<ParsedEvent>> {
         "PermissionRequest" => Event::NeedsInput {
             reason: "permission_request".to_string(),
         },
-        "SessionEnd" => Event::SessionEnd,
-        // SubagentStop, Pre/PostCompact and Pre/PostToolUse are noise here.
+        "SessionEnd" if agent_id.is_none() => Event::SessionEnd,
+        // Pre/PostCompact and Pre/PostToolUse are noise here.
         _ => return Ok(None),
     };
 
@@ -42,6 +45,7 @@ pub fn parse(raw: &serde_json::Value) -> anyhow::Result<Option<ParsedEvent>> {
         event,
         session_id: first_str(raw, SESSION_KEYS),
         cwd: first_str(raw, &["cwd"]),
+        agent_id,
     }))
 }
 

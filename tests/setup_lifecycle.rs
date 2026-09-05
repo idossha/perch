@@ -300,8 +300,12 @@ fn setup_writes_codex_trust_records_and_uninstall_removes_them() {
     assert!(body.contains(&key), "{body}");
     assert!(body.contains("model = \"gpt-5\""), "{body}");
     assert!(body.contains("/other/hooks.json:stop:0:0"), "{body}");
-    // One record per perch handler: five events.
-    assert_eq!(body.matches("trusted_hash").count(), 6, "{body}");
+    // One record per perch handler, plus the foreign one that was there.
+    let expected = 1 + std::fs::read_to_string(&hooks)
+        .unwrap()
+        .matches("perch hook codex")
+        .count();
+    assert_eq!(body.matches("trusted_hash").count(), expected, "{body}");
 
     let out = perch(h, &["doctor"]);
     assert!(stdout(&out).contains("trust: yes"), "{}", stdout(&out));

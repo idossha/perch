@@ -72,9 +72,53 @@ fn session_end() {
 }
 
 #[test]
-fn untracked_and_subagent_events_are_dropped() {
+fn untracked_events_are_dropped() {
     assert!(parse("precompact.json").is_none());
-    assert!(parse("subagent_stop.json").is_none());
+}
+
+#[test]
+fn subagent_events_carry_the_agent_id() {
+    let p = parse("subagent_start.json").unwrap();
+    assert_eq!(
+        p.event,
+        Event::SubagentStart {
+            agent_type: Some("Explore".into())
+        }
+    );
+    assert_eq!(p.agent_id.as_deref(), Some("sub-7"));
+    assert_eq!(p.session_id.as_deref(), Some("s-1"));
+
+    let p = parse("subagent_stop_event.json").unwrap();
+    assert_eq!(
+        p.event,
+        Event::SubagentStop {
+            last_message: Some("Found it in src/reducer.rs.".into())
+        }
+    );
+    assert_eq!(p.agent_id.as_deref(), Some("sub-7"));
+}
+
+/// Claude also sends a plain `Stop` or `Notification` with an `agent_id` when
+/// the subagent, not the session, produced it.
+#[test]
+fn a_stop_or_notification_with_an_agent_id_belongs_to_the_child() {
+    let p = parse("subagent_stop.json").unwrap();
+    assert_eq!(
+        p.event,
+        Event::Stop {
+            last_message: Some("subagent finished".into())
+        }
+    );
+    assert_eq!(p.agent_id.as_deref(), Some("sub-7"));
+
+    let p = parse("notification_agent_needs_input_child.json").unwrap();
+    assert_eq!(
+        p.event,
+        Event::NeedsInput {
+            reason: "agent_needs_input".into()
+        }
+    );
+    assert_eq!(p.agent_id.as_deref(), Some("sub-7"));
 }
 
 #[test]

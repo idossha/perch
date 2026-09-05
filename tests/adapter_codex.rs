@@ -70,14 +70,31 @@ fn alias_field_names_are_accepted() {
 }
 
 #[test]
-fn untracked_and_subagent_events_are_dropped() {
-    for f in [
-        "subagent_stop.json",
-        "pre_tool_use.json",
-        "post_compact.json",
-    ] {
+fn untracked_events_are_dropped() {
+    for f in ["pre_tool_use.json", "post_compact.json"] {
         assert!(parse(f).is_none(), "{f}");
     }
+}
+
+#[test]
+fn subagent_events_carry_the_agent_id() {
+    let p = parse("subagent_start.json").unwrap();
+    assert_eq!(
+        p.event,
+        Event::SubagentStart {
+            agent_type: Some("reviewer".into())
+        }
+    );
+    assert_eq!(p.agent_id.as_deref(), Some("a-7"));
+
+    let p = parse("subagent_stop.json").unwrap();
+    assert_eq!(
+        p.event,
+        Event::SubagentStop {
+            last_message: Some("Reviewed the diff.".into())
+        }
+    );
+    assert_eq!(p.agent_id.as_deref(), Some("a-7"));
 }
 
 #[test]

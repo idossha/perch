@@ -10,7 +10,7 @@ use serde_json::json;
 
 use crate::adapters;
 use crate::config;
-use crate::model::{Harness, PaneRecord, State};
+use crate::model::{Harness, PaneRecord};
 use crate::reducer;
 use crate::sound;
 use crate::store;
@@ -35,11 +35,12 @@ pub fn run(harness: Harness) -> anyhow::Result<()> {
     let now = store::now_rfc3339();
     let mut rec = store::load(&pane).unwrap_or_else(|| PaneRecord::new(&pane, harness, &now));
     rec.harness = harness;
-    let changed = reducer::apply(&mut rec, &parsed, &now);
+    let applied = reducer::apply(&mut rec, &parsed, &now);
+    let changed = applied.parent_changed;
 
     // Sound before the write, so the cooldown stamp lands in the same record.
-    if changed {
-        maybe_sound(&mut rec);
+    if let Some(key) = applied.sound {
+        maybe_sound(&mut rec, key);
     }
     store::save(&rec)?;
 
@@ -86,12 +87,7 @@ fn dump_payload(harness: Harness, body: &str) {
 }
 
 /// Play the state's sound unless this pane sounded within the cooldown.
-fn maybe_sound(rec: &mut PaneRecord) {
-    let key = match rec.state {
-        State::Done => "done",
-        State::NeedsInput => "needs_input",
-        _ => return,
-    };
+fn maybe_sound(rec: &mut PaneRecord, key: &str) {
     let cfg = config::load();
     let now_ms = Utc::now().timestamp_millis();
     if let Some(last) = rec.last_sound_ms {

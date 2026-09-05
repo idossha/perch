@@ -73,10 +73,22 @@ impl State {
 pub enum Event {
     SessionStart,
     UserPromptSubmit,
-    Stop { last_message: Option<String> },
-    NeedsInput { reason: String },
+    Stop {
+        last_message: Option<String>,
+    },
+    NeedsInput {
+        reason: String,
+    },
     Completed,
     SessionEnd,
+    /// A subagent started under this pane's session.
+    SubagentStart {
+        agent_type: Option<String>,
+    },
+    /// A subagent finished; the message is its final assistant message.
+    SubagentStop {
+        last_message: Option<String>,
+    },
 }
 
 impl Event {
@@ -88,6 +100,8 @@ impl Event {
             Event::NeedsInput { .. } => "needs_input",
             Event::Completed => "completed",
             Event::SessionEnd => "session_end",
+            Event::SubagentStart { .. } => "subagent_start",
+            Event::SubagentStop { .. } => "subagent_stop",
         }
     }
 }
@@ -98,6 +112,21 @@ pub struct ParsedEvent {
     pub event: Event,
     pub session_id: Option<String>,
     pub cwd: Option<String>,
+    /// Set when the harness attributed the event to a subagent of the session;
+    /// the reducer then folds it into the parent record's `children`.
+    pub agent_id: Option<String>,
+}
+
+impl ParsedEvent {
+    /// A parent-session event: no subagent attribution.
+    pub fn top_level(event: Event, session_id: Option<String>, cwd: Option<String>) -> Self {
+        ParsedEvent {
+            event,
+            session_id,
+            cwd,
+            agent_id: None,
+        }
+    }
 }
 
 /// The persisted per-pane record.

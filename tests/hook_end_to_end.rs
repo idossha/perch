@@ -74,6 +74,81 @@ fn a_prompt_then_stop_leaves_a_done_record() {
     assert!(events.contains("\"event\":\"stop\""));
 }
 
+/// Subagent events land under the parent pane's record, never as panes of
+/// their own, and `list --json` carries them.
+#[test]
+fn subagent_events_become_children_of_the_parent_pane() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path();
+
+    for f in [
+        "user_prompt_submit.json",
+        "subagent_start.json",
+        "notification_agent_needs_input_child.json",
+        "subagent_stop_event.json",
+    ] {
+        assert!(run(p, &["hook", "claude"], Some(&fixture(f))).2, "{f}");
+    }
+
+    let (out, _, ok) = run(p, &["list", "--json"], None);
+    assert!(ok);
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let recs = v.as_array().unwrap();
+    assert_eq!(recs.len(), 1, "one pane, not one per subagent: {out}");
+    let children = recs[0]["children"].as_array().unwrap();
+    assert_eq!(children.len(), 1);
+    assert_eq!(children[0]["id"], "sub-7");
+    assert_eq!(children[0]["agent_type"], "Explore");
+    assert_eq!(children[0]["state"], "done");
+    assert_eq!(children[0]["last_message"], "Found it in src/reducer.rs.");
+
+    // A new turn retires the finished child.
+    assert!(
+        run(
+            p,
+            &["hook", "claude"],
+            Some(&fixture("user_prompt_submit.json"))
+        )
+        .2
+    );
+    let (out, _, _) = run(p, &["list", "--json"], None);
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(v[0]["children"].as_array().unwrap().is_empty(), "{out}");
+}
+
+/// Codex reports subagents the same way, and the parent's own state is
+/// untouched by them.
+#[test]
+fn codex_subagents_do_not_move_the_parent() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path();
+    let args = ["hook", "codex"];
+    assert!(
+        run(
+            p,
+            &args,
+            Some(&harness_fixture("codex", "user_prompt_submit.json"))
+        )
+        .2
+    );
+    assert!(
+        run(
+            p,
+            &args,
+            Some(&harness_fixture("codex", "subagent_start.json"))
+        )
+        .2
+    );
+
+    let events = std::fs::read_to_string(p.join("events.jsonl")).unwrap();
+    assert!(events.contains("\"event\":\"subagent_start\""), "{events}");
+    // The pane stayed `working`: the subagent never changed its state.
+    assert!(
+        events.lines().all(|l| l.contains("\"state\":\"working\"")),
+        "{events}"
+    );
+}
+
 #[test]
 fn malformed_and_untracked_payloads_still_exit_zero() {
     let dir = tempfile::tempdir().unwrap();

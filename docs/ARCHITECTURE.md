@@ -41,12 +41,37 @@ pane's record and returns whether the state changed.
 | `Completed` | `Notification` with `agent_completed` | `done` | — |
 | `SessionEnd` | `hook_event_name: SessionEnd` | `ended` | — |
 
-Anything else — a subagent event (`agent_id` present), an unrecognised
-notification type, `PreCompact` and friends — parses to `None` and is a no-op.
+Anything else — an unrecognised notification type, `PreCompact` and friends —
+parses to `None` and is a no-op.
 `session_id` and `cwd` are recorded whenever present; `project` is the last
 path component of `cwd`. `since` moves only on an actual state change, so age
 means "time in this state". `last_message` is whitespace-collapsed and capped
 at 400 characters.
+
+## Subagents
+
+Claude and Codex both report subagents: `SubagentStart` / `SubagentStop`, and
+`Stop` or `Notification` carrying an `agent_id` when the subagent rather than
+the session produced them. An event with an `agent_id` never moves the pane's
+own state; it folds into `children` on the parent record instead.
+
+| event (with `agent_id`) | child |
+|---|---|
+| `SubagentStart` | pushed as `working`, with `agent_type` when given |
+| `SubagentStop`, or `Stop` | `done`, `last_message` = its final message |
+| `Notification` (needs-input type) | `needs_input` on that child |
+
+`reducer::apply` returns `Applied { parent_changed, sound }`: a subagent event
+sets `parent_changed: false`, so it plays no sound, prints no tmux cue and
+moves no window flag — with one exception, `notification_type:
+agent_needs_input`, which is the human being blocked and does sound.
+
+Children are garbage-collected on writes, never by a timer: a `done` or `ended`
+child older than ten minutes is dropped on the next event for that pane, and
+the parent's next `UserPromptSubmit` or `Stop` clears every `done` child, since
+a new turn spawns its own. `perch list --json` carries `children`; the TUI
+shows them indented under their pane, and jumping to one lands on the parent
+pane, because a subagent has no pane of its own.
 
 States rank `needs_input < done < working < starting < idle < ended`; that rank
 then `since` ascending is the sort used by `list`, `next` and the TUI, so "the

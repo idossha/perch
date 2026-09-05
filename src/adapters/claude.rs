@@ -1,7 +1,8 @@
 //! Claude Code hook payloads -> perch events.
 //!
 //! Claude writes one JSON object to the hook's stdin with `hook_event_name`
-//! plus event-specific fields. Subagent events carry `agent_id` and are ignored.
+//! plus event-specific fields. Subagent events carry `agent_id`; they are
+//! parsed too, and the reducer folds them into the parent pane's `children`.
 
 use crate::model::{Event, ParsedEvent};
 
@@ -14,19 +15,22 @@ const NEEDS_INPUT: &[&str] = &[
 ];
 
 pub fn parse(raw: &serde_json::Value) -> anyhow::Result<Option<ParsedEvent>> {
-    // Subagents get their own ids; perch tracks only top-level sessions.
-    if raw.get("agent_id").and_then(|v| v.as_str()).is_some() {
-        return Ok(None);
-    }
-
+    let agent_id = str_field(raw, "agent_id");
     let name = raw
         .get("hook_event_name")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("payload has no hook_event_name"))?;
 
     let event = match name {
-        "SessionStart" => Event::SessionStart,
-        "UserPromptSubmit" => Event::UserPromptSubmit,
+        "SubagentStart" => Event::SubagentStart {
+            agent_type: str_field(raw, "agent_type"),
+        },
+        "SubagentStop" => Event::SubagentStop {
+            last_message: str_field(raw, "last_assistant_message"),
+        },
+        // Without an agent id these are ordinary session events.
+        "SessionStart" if agent_id.is_none() => Event::SessionStart,
+        "UserPromptSubmit" if agent_id.is_none() => Event::UserPromptSubmit,
         "Stop" => Event::Stop {
             last_message: raw
                 .get("last_assistant_message")
@@ -49,8 +53,9 @@ pub fn parse(raw: &serde_json::Value) -> anyhow::Result<Option<ParsedEvent>> {
                 return Ok(None);
             }
         }
-        "SessionEnd" => Event::SessionEnd,
-        // PreCompact and friends are noise for the dashboard.
+        "SessionEnd" if agent_id.is_none() => Event::SessionEnd,
+        // PreCompact and friends are noise for the dashboard; so is a
+        // session-level event attributed to a subagent.
         _ => return Ok(None),
     };
 
@@ -58,6 +63,7 @@ pub fn parse(raw: &serde_json::Value) -> anyhow::Result<Option<ParsedEvent>> {
         event,
         session_id: str_field(raw, "session_id"),
         cwd: str_field(raw, "cwd"),
+        agent_id,
     }))
 }
 
