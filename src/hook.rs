@@ -11,6 +11,7 @@ use serde_json::json;
 use crate::adapters;
 use crate::config;
 use crate::model::{Harness, PaneRecord};
+use crate::notify;
 use crate::reducer;
 use crate::sound;
 use crate::store;
@@ -113,13 +114,20 @@ pub fn seen(pane: &str) -> bool {
     true
 }
 
-/// The instant cue for a parent transition.
+/// The instant cue for a parent transition: the sound, the pane option, and
+/// the card.
 ///
-/// The sound is the notification; this writes the pane's `@perch_state` so a
-/// user's own status line can show it. One spawned `tmux`, never waited on, so
-/// the hook stays well inside its budget.
+/// The pane's `@perch_state` lets a user put perch in a status line they wrote
+/// themselves. The card is a *detached* `perch notify`, never waited on: the
+/// popups it draws are its problem, and the hook is back inside its budget
+/// whatever tmux does with them.
 fn cue(rec: &PaneRecord, pane: &str) {
     tmux::current().batch(&[opt("-p", pane, "@perch_state", rec.state.as_str())]);
+    if let Some(kind) = notify::kind_for(rec.state) {
+        if config::load().notify.enabled {
+            notify::spawn_detached(kind, pane);
+        }
+    }
 }
 
 fn opt(scope: &str, pane: &str, name: &str, value: &str) -> Vec<String> {

@@ -3,6 +3,7 @@ pub mod config;
 pub mod hook;
 pub mod install;
 pub mod model;
+pub mod notify;
 pub mod paths;
 pub mod reducer;
 pub mod setup;

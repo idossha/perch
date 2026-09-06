@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use perch::model::{Harness, State};
 use perch::paths::Paths;
 use perch::setup::{self, SetupOpts, UninstallOpts};
-use perch::{config, hook, install, sound, store, tmux, tui};
+use perch::{config, hook, install, notify, sound, store, tmux, tui};
 
 #[derive(Parser)]
 #[command(
@@ -85,6 +85,28 @@ enum Cmd {
         /// The client to draw on and to move. Pass `#{client_name}`.
         #[arg(long)]
         client: Option<String>,
+    },
+    /// Draw the centered notification card for a pane on every client.
+    ///
+    /// Spawned detached by the hook; `perch notify test` draws a sample.
+    Notify {
+        /// done | needs_input | test
+        kind: String,
+        /// The pane whose record the card describes.
+        #[arg(long)]
+        pane: Option<String>,
+    },
+    /// The card's popup body (run by `notify` inside `display-popup`).
+    #[command(hide = true)]
+    NotifyBody {
+        kind: String,
+        duration_ms: u64,
+        /// The client this popup is drawn on: where a key is forwarded.
+        #[arg(long)]
+        client: Option<String>,
+        /// The card's lines, in order. Passed three times.
+        #[arg(long = "line")]
+        lines: Vec<String>,
     },
     /// Sound helpers.
     #[command(subcommand)]
@@ -184,6 +206,18 @@ fn dispatch(cmd: Cmd) -> anyhow::Result<()> {
             tui::run(tmux::current().as_ref(), &client)
         }
         Cmd::Open { client } => cmd_open(client.as_deref()),
+        Cmd::Notify { kind, pane } => cmd_notify(&kind, pane.as_deref()),
+        Cmd::NotifyBody {
+            kind,
+            duration_ms,
+            client,
+            lines,
+        } => {
+            let kind = notify::Kind::parse(&kind)
+                .ok_or_else(|| anyhow::anyhow!("unknown kind: {kind}"))?;
+            notify::body(kind, duration_ms, &lines, client.as_deref());
+            Ok(())
+        }
         Cmd::Sound(SoundCmd::Test { event }) => {
             let cfg = config::load();
             match cfg.sound_for(&event) {
@@ -350,6 +384,21 @@ fn cmd_open(client: Option<&str>) -> anyhow::Result<()> {
     if !tmux::current().run_checked(&[cmd]) {
         anyhow::bail!("tmux refused to open the popup");
     }
+    Ok(())
+}
+
+/// Draw the card for one pane on every attached client.
+///
+/// `test` needs no record: it is how a user checks placement and colours.
+fn cmd_notify(kind: &str, pane: Option<&str>) -> anyhow::Result<()> {
+    let kind = notify::Kind::parse(kind)
+        .ok_or_else(|| anyhow::anyhow!("unknown kind: {kind} (done | needs_input | test)"))?;
+    let rec = match (kind, pane) {
+        (notify::Kind::Test, None) => notify::sample_record(),
+        (_, Some(p)) => store::load(p).ok_or_else(|| anyhow::anyhow!("no record for pane {p}"))?,
+        (_, None) => anyhow::bail!("notify {}: pass --pane <pane>", kind.as_str()),
+    };
+    notify::show(tmux::current().as_ref(), &config::load(), kind, &rec);
     Ok(())
 }
 

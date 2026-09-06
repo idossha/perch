@@ -168,9 +168,9 @@ fn a_tool_call_unblocks_a_stale_needs_input() {
     assert!(events.contains("\"event\":\"idle_prompt\""), "{events}");
 }
 
-/// The instant cue is the sound; the only tmux write is the pane option.
+/// The cue is the sound, the pane option, and one detached `perch notify`.
 #[test]
-fn a_parent_transition_sets_the_pane_state_and_nothing_else() {
+fn a_parent_transition_sets_the_pane_state_and_asks_for_a_card() {
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path();
     let log = p.join("tmux.log");
@@ -183,7 +183,6 @@ fn a_parent_transition_sets_the_pane_state_and_nothing_else() {
             .env("PERCH_NO_SOUND", "1")
             .env("PERCH_NO_TMUX", "1")
             .env("PERCH_TMUX_LOG", &log)
-            .env("PERCH_FAKE_CLIENTS", "/dev/ttys001,/dev/ttys002")
             .env("TMUX_PANE", "%999")
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
@@ -204,9 +203,17 @@ fn a_parent_transition_sets_the_pane_state_and_nothing_else() {
         .lines()
         .map(|l| l.to_string())
         .collect();
-    assert_eq!(lines.len(), 1, "one option write and no more: {lines:?}");
+    assert_eq!(
+        lines.len(),
+        2,
+        "the option and the card, nothing else: {lines:?}"
+    );
     assert_eq!(lines[0], "set-option -p -t %999 @perch_state needs_input");
-    // Nothing draws on the user's screen: no toast, no window flag, no flash.
+    assert_eq!(
+        lines[1], "notify needs_input %999",
+        "the card is requested after the state change, and only for it"
+    );
+    // The hook itself never draws: the detached `perch notify` does.
     let all = lines.join("\n");
     for gone in ["toast", "@perch_flag", "display-message", "display-popup"] {
         assert!(!all.contains(gone), "{gone} survived: {all}");
@@ -214,14 +221,52 @@ fn a_parent_transition_sets_the_pane_state_and_nothing_else() {
 
     // A subagent event is not a parent transition: no cue at all.
     hook(&fixture("subagent_start.json"));
-    assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 1);
+    assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 2);
 
-    // Working sets the state and says nothing else.
+    // Working sets the state and asks for no card.
     hook(&fixture("user_prompt_submit.json"));
     let body = std::fs::read_to_string(&log).unwrap();
     let last = body.lines().last().unwrap().to_string();
     assert_eq!(last, "set-option -p -t %999 @perch_state working");
-    assert!(!body.contains("toast"), "{body}");
+    assert_eq!(body.lines().filter(|l| l.starts_with("notify ")).count(), 1);
+}
+
+/// `[notify] enabled = false` leaves the sound and the pane option alone and
+/// asks for no card at all.
+#[test]
+fn a_disabled_notify_suppresses_the_card_and_nothing_else() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path();
+    let log = p.join("tmux.log");
+    let cfg = p.join("config");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::write(cfg.join("config.toml"), "[notify]\nenabled = false\n").unwrap();
+
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_perch"));
+    cmd.args(["hook", "claude"])
+        .env("PERCH_STATE_DIR", p)
+        .env("PERCH_CONFIG_DIR", &cfg)
+        .env("PERCH_NO_SOUND", "1")
+        .env("PERCH_NO_TMUX", "1")
+        .env("PERCH_TMUX_LOG", &log)
+        .env("TMUX_PANE", "%999")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut child = cmd.spawn().unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(fixture("notification_permission_prompt.json").as_bytes())
+        .unwrap();
+    assert!(child.wait().unwrap().success());
+
+    let body = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(
+        body.trim(),
+        "set-option -p -t %999 @perch_state needs_input"
+    );
 }
 
 /// Subagent events land under the parent pane's record, never as panes of
