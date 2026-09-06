@@ -144,9 +144,15 @@ shows only in `perch list --json` and under `PERCH_DEBUG=1`.
 Rows are grouped by project, the groups ordered by urgency, and each state has
 a glyph as well as a colour so the board reads without colour: `⚑` needs_input,
 `✓` done, `▶` working, `…` starting, `·` idle, `✕` ended. Ended panes are
-collapsed behind a footer count until you press `e`. Panes with subagents show
-a `+N` badge and one indented `└` row per live subagent; jumping to a subagent
-lands on its parent pane.
+collapsed behind a footer count until you press `e`.
+
+Panes with subagents carry a badge in the harness column — `claude ⚑1 ▶4 ✓48`,
+blocked, running and finished. Only subagents that are running or blocked get a
+row of their own; `Space` folds the finished ones back out, newest first, and
+folds them away again. A parent turn ending retires its subagents, and a pane
+you have seen drops the finished ones entirely, so the board never fills up
+with work that is over. Jumping to a subagent lands on its parent pane, because
+that is where it lives.
 
 | key | action |
 |---|---|
@@ -157,6 +163,7 @@ lands on its parent pane.
 | `m` | toggle global mute |
 | `x` | dismiss a `done` pane back to `idle` |
 | `e` | show or hide `ended` panes |
+| `Space` / `Tab` | expand or collapse a pane's finished subagents |
 | `v` | grouped by project ⇄ flat, newest change first |
 | `?` | help overlay (any key closes it) |
 | `r` | refresh now |
@@ -241,11 +248,12 @@ happen: `needs_input` now means only a real approval or question dialog
 stale `needs_input` clears on the next tool call. If you are on an older
 install, re-run `perch setup` — the `PreToolUse` hook is new.
 
-**A subagent is missing.** Subagents show as indented rows under their pane,
-and only while the harness reports them: they are cleared by your next prompt
-and pruned ten minutes after they finish. If none ever appear, re-run
-`perch setup` — the `SubagentStart`/`SubagentStop` hooks were added later than
-the rest.
+**A subagent is missing.** Only running and blocked subagents get a row; the
+finished ones are the `✓N` in the pane's badge, and `Space` shows them. They do
+not last: the pane's turn ending retires them, seeing the pane clears them, a
+pane keeps at most twenty, and anything finished is pruned after ten minutes.
+If none ever appear at all, re-run `perch setup` — the `SubagentStart` /
+`SubagentStop` hooks were added later than the rest.
 
 **Nothing shows up for codex.** Run `perch doctor`: if it says `trust: no`,
 codex is refusing to run the hook. `perch setup` writes the trust record;
@@ -287,6 +295,7 @@ correct. `needs_input` always sounds.
 
 ## Docs
 
+- [docs/PHILOSOPHY.md](docs/PHILOSOPHY.md) — what perch is for, and what it refuses to do
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — model, layout, invariants
 - [docs/DECISIONS.md](docs/DECISIONS.md) — why it is shaped this way
 - [docs/PLAN.md](docs/PLAN.md) — the original plan

@@ -329,3 +329,36 @@ those commands instead, and `client-focus-in` covers returning to the terminal.
 
 **Revisit if** `list-clients` shows up in a profile of the TUI refresh, at
 which point the reconciliation should be rate-limited rather than removed.
+
+## 14. Finished subagents fold into the badge; a parent stop retires its children — 2026-09-05
+
+**Decision.** A pane's finished subagents are a count in its harness cell
+(`claude ▶4 ✓48`), not rows. Only children that are `working` or `needs_input`
+get a row; `Space` or `Tab` unfolds the rest, dim and newest first, as session
+state keyed by pane id. Four reducer/store rules keep the list short: a parent
+`Stop` marks every still-`working` child `done`, a pane reaching `idle` by any
+path drops its finished children, a pane keeps at most twenty of them, and the
+ten-minute TTL stays as a backstop.
+
+**Why.** A real board had forty-eight finished subagents listed under one pane,
+pushing the four that were still running — and the pane above that was waiting
+on a permission prompt — off the screen. Those four had been claiming `working`
+for twenty-five minutes because no `SubagentStop` ever arrived for them. Both
+halves are the same defect: perch was recording what happened instead of
+showing what needs you. Retiring on the parent's `Stop` makes correctness
+independent of an event the harness may never send, which is the same argument
+as decision 13 for `seen`. Clearing on `idle` puts the rule where the state
+already means "nothing outstanding here", so `perch seen`, the reconciliation
+and a watched `Stop` cannot disagree.
+
+**Cost.** The record no longer keeps a full history of a fan-out: past twenty
+children, or once the pane goes idle, earlier ones are gone from
+`perch list --json` as well as from the board. `events.jsonl` still has every
+`subagent_start` / `subagent_stop`, which is where a transcript belongs.
+`store::snapshot_with_live` now writes a record back when only its child list
+changed, so a read can touch the disk where it previously would not. The
+harness column became adaptive to fit the badge, so its width now depends on
+the widest fan-out on screen.
+
+**Revisit if** users want the finished list to survive a pane going idle — in
+which case it should be a query over `events.jsonl`, not a longer record.

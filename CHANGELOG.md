@@ -7,7 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Finished subagents are a count, not a wall of rows.** A pane with a big
+  fan-out now shows `claude ▶4 ✓48` in its harness column and one row per
+  subagent that is actually running or blocked on you. Press `Space` (or `Tab`)
+  on the pane to unfold the finished ones, newest first, and again to fold them
+  away. Nothing is hidden that is waiting on you: a blocked subagent always has
+  a row.
+
 ### Fixed
+
+- **Subagents no longer sit at `working` forever.** When a pane's turn ends,
+  every subagent it spawned is marked finished — a missing `SubagentStop` from
+  the harness can no longer leave four children claiming to be running half an
+  hour later.
+- **A pane you have seen sheds its finished subagents.** Previously only a new
+  prompt or a `Stop` cleared them, so a pane reached `idle` still carrying the
+  last turn's children. Every path to `idle` now clears them, and a pane keeps
+  at most twenty subagents whatever happens.
 
 - **`done` and `idle` are trustworthy again.** Whether a pane has been "seen"
   is now worked out from the live tmux client list every time anything reads

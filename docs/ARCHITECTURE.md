@@ -1,5 +1,8 @@
 # perch — architecture
 
+Why any of this is shaped the way it is: [PHILOSOPHY.md](PHILOSOPHY.md). This
+document is the mechanism; that one is the reason.
+
 perch is a binary with no resident process. Harnesses call `perch hook` from
 their own lifecycle hooks; that call reduces one event into one file. Every
 other subcommand is a pure reader of those files plus one `tmux list-panes`
@@ -143,6 +146,44 @@ States rank `needs_input < done < working < starting < idle < ended`; that rank
 then `since` ascending is the sort used by `list`, `next` and the TUI, so "the
 first row" is always "the oldest thing waiting on you".
 
+## Subagents
+
+A harness that attributes an event to a subagent (Claude's `agent_id`, codex's
+`SubagentStart`) has it folded into the parent record's `children`, never into
+a record of its own: a subagent runs in the parent's process, so it has no pane
+to jump to and no state of its own to sort by.
+
+Four rules keep the list an attention list rather than a transcript:
+
+1. **A parent `Stop` retires every child still `working`.** The parent's turn
+   ending is proof its subagents ended, whatever `SubagentStop` the harness
+   lost. The child is marked `done` and its message is left alone. A child in
+   `needs_input` is not retired — it is genuinely blocked on you.
+2. **A pane reaching `idle` clears its finished children.** All three paths
+   there clear: a `Stop` on a pane you were watching (`reducer::apply_with`),
+   the seen reconciliation (`store::mark_seen`), and `perch seen`, which writes
+   the state directly — so `store::reconcile` re-applies the rule on every read
+   and persists it when the child list changed. A `UserPromptSubmit` clears
+   them too: a new turn owes nothing to the last one.
+3. **At most twenty children per pane** (`reducer::MAX_CHILDREN`). Pushing past
+   it drops the oldest finished child, and only when none is left, the oldest
+   running one.
+4. **The ten-minute TTL stays** as a backstop, applied on every write, for a
+   pane that goes quiet without ever reaching `idle`.
+
+Subagent events are never parent transitions: they do not move the pane's
+state, write `@perch_state` or log a state change. The one sound a child can
+ask for is `needs_input`, and only for Claude's `agent_needs_input`.
+
+On the board, a pane's harness cell carries the badge — `claude ⚑1 ▶4 ✓48`,
+zero parts omitted, blocked children in the `needs_input` colour, running ones
+in the `working` colour, finished ones dim. Child rows are drawn only for
+children that are `working` or `needs_input`; `Space` (or `Tab`) on a pane
+unfolds its finished children as dim rows, most recent first. The expansion is
+session state in `App::expanded`, keyed by pane id, and is not persisted.
+`next_waiting` and `perch next` ignore children entirely — there is nowhere
+separate to send you.
+
 ## State directory
 
 `~/.local/state/perch/`, overridable with `PERCH_STATE_DIR`:
@@ -156,7 +197,7 @@ mute                  presence = globally muted
 ```
 
 A record is `{pane, harness, session_id, cwd, project, branch, location, state,
-since, last_message, title, pid, last_sound_ms}`. Unknown or missing fields
+since, last_message, title, pid, last_sound_ms, children}`. Unknown or missing fields
 default, so an old record still loads; an unparseable one is skipped rather
 than fatal.
 
