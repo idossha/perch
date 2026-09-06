@@ -184,6 +184,12 @@ session state in `App::expanded`, keyed by pane id, and is not persisted.
 `next_waiting` and `perch next` ignore children entirely — there is nowhere
 separate to send you.
 
+On every read the store re-applies two invariants regardless of how a state was
+written: a pane that is not `working` has no running children (they are retired
+to `done`, since a subagent cannot outlive its parent's turn), and an `idle` pane
+keeps no finished children. This also repairs records written before these rules
+existed.
+
 ## State directory
 
 `~/.local/state/perch/`, overridable with `PERCH_STATE_DIR`:

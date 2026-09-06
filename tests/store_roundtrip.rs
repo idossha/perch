@@ -166,3 +166,38 @@ fn snapshot_marks_done_panes_a_focused_client_is_showing_as_idle() {
         std::env::remove_var("PERCH_FAKE_VIEWERS");
     });
 }
+
+#[test]
+fn reconcile_retires_running_children_of_a_pane_that_is_not_working() {
+    use perch::model::{Harness, PaneRecord, State, Subagent};
+    let now = chrono::Utc::now();
+    let child = |id: &str, state: State| Subagent {
+        id: id.into(),
+        agent_type: None,
+        state,
+        since: "2026-01-01T00:00:00Z".into(),
+        last_message: None,
+    };
+    let mut idle = PaneRecord::new("%1", Harness::Claude, "2026-01-01T00:00:00Z");
+    idle.state = State::Idle;
+    idle.children = vec![child("a", State::Working), child("b", State::Done)];
+    let mut done = PaneRecord::new("%2", Harness::Claude, "2026-01-01T00:00:00Z");
+    done.state = State::Done;
+    done.children = vec![child("c", State::Working)];
+    let mut working = PaneRecord::new("%3", Harness::Claude, "2026-01-01T00:00:00Z");
+    working.state = State::Working;
+    working.children = vec![child("d", State::Working)];
+
+    let out = perch::store::reconcile(
+        vec![idle, done, working],
+        &["%1".into(), "%2".into(), "%3".into()],
+        now,
+    );
+    let by = |pane: &str| out.iter().find(|r| r.pane == pane).expect(pane);
+    // An idle pane keeps nothing: its stale running child is retired, then cleared.
+    assert!(by("%1").children.is_empty(), "{:?}", by("%1").children);
+    // A done pane keeps the retired child, now finished, until it is seen.
+    assert_eq!(by("%2").children[0].state, State::Done);
+    // A working pane's running child is untouched.
+    assert_eq!(by("%3").children[0].state, State::Working);
+}

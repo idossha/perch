@@ -558,8 +558,9 @@ mod subagent_tests {
         );
         r.state = State::Idle;
         let out = store::reconcile(vec![r], &["%2".into()], chrono::Utc::now());
-        assert_eq!(out[0].children.len(), 1);
-        assert_eq!(out[0].children[0].id, "busy");
+        // A subagent cannot outlive its parent's turn: an idle pane's "busy"
+        // child is retired on read, and an idle pane keeps nothing finished.
+        assert!(out[0].children.is_empty(), "{:?}", out[0].children);
     }
 
     #[test]

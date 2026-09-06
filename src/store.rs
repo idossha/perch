@@ -195,8 +195,14 @@ pub fn reconcile(
 ) -> Vec<PaneRecord> {
     let mut out = Vec::new();
     for mut rec in records {
-        // The invariant, wherever `idle` came from — including `perch seen`,
-        // which writes the state without going through the reducer.
+        // The invariants, wherever the state came from — including `perch seen`,
+        // which writes the state without going through the reducer, and
+        // records written before these rules existed. A subagent runs inside
+        // its parent's turn, so no pane that is not `working` can have a
+        // running child; and an `idle` pane keeps no finished ones.
+        if rec.state != State::Working && rec.state != State::Starting {
+            crate::reducer::retire_children(&mut rec, &now.to_rfc3339());
+        }
         if rec.state == State::Idle {
             crate::reducer::clear_finished_children(&mut rec);
         }
