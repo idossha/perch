@@ -163,6 +163,11 @@ impl Server {
             .env("TMUX_TMPDIR", &self.tmux_tmpdir)
             // Never inherit an outer session's socket.
             .env_remove("TMUX")
+            // The first call spawns the server, and `run-shell` hooks inherit
+            // the server's environment: CI's job-wide PERCH_NO_TMUX=1 must not
+            // reach a `perch seen` launched by a tmux hook.
+            .env_remove("PERCH_NO_TMUX")
+            .env("PERCH_NO_SOUND", "1")
             .output()
             .expect("spawn tmux")
     }
