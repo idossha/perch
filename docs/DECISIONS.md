@@ -362,3 +362,23 @@ the widest fan-out on screen.
 
 **Revisit if** users want the finished list to survive a pane going idle — in
 which case it should be a query over `events.jsonl`, not a longer record.
+
+## 15. The card takes the screen, and gives every keystroke back — 2026-09-05
+
+**Decision.** A sound is unmissable and uninformative: it does not say which of
+six agents finished. On `done` or `needs_input` perch also fades a three-line
+card into the center of every attached client: project and branch, tmux
+location and harness, last message. Rejected the same day: a desktop banner
+(per-OS, unstyleable, outside tmux) and a one-line bottom-right toast (not
+enough to identify an agent).
+
+**Why it is allowed to take the screen.** It cannot cost the user anything. The
+popup body reads the client's active pane before entering raw mode and forwards
+the first keystroke verbatim with `send-keys -l --` as it closes, so a card
+drawn over someone mid-sentence loses no character. It costs the hook no time:
+the hook spawns a detached `perch notify` and returns.
+
+**Cost.** The fade is the popup restyling itself from inside
+(`display-popup -s` run within the popup), which needs tmux 3.2+; below that
+perch degrades to sound only. Two cards in a row replace each other rather than
+stack. `[notify] enabled = false` turns it off.

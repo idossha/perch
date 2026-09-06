@@ -204,22 +204,31 @@ than fatal.
 Config lives separately in `~/.config/perch/config.toml`
 (`PERCH_CONFIG_DIR`), next to the generated `perch.tmux.conf`.
 
-## The cue: sound, and nothing else
+## The cue: a sound and one card
 
-**A sound is the only thing perch does to get your attention.** It costs no
-screen, cannot eat a keystroke, and needs no cleanup. The toast popup, the
-window-status flag, the status-line flash and the macOS `osascript` banner are
-all gone, along with `[toast]` and `[notify]`.
+Two things happen on a parent transition into `done` or `needs_input`, and
+nothing on any other transition or on subagent events:
 
-On a transition into `done` or `needs_input` the hook plays the configured
-sound through `afplay`, subject to a per-pane `cooldown_secs` gap and the
-global mute file. It also writes `set-option -p @perch_state <state>` on the
-pane — one spawned `tmux`, never waited on — which costs nothing and lets a
-user put perch's state in a status line they wrote themselves. Subagent events
-are not parent transitions and never cue.
+1. **Sound.** The hook plays the configured sound through `afplay`, subject to
+   a per-pane `cooldown_secs` gap and the global mute file.
+2. **Card.** The hook spawns a detached `perch notify <kind> --pane <pane>` and
+   returns; that process draws a borderless three-line `display-popup` in the
+   center of every attached client — state, project and branch; tmux location
+   and harness; the agent's last message — fades it in, holds, fades it out
+   (the popup restyles itself from the inside with `display-popup -s`). The
+   body reads the client's active pane before entering raw mode; the first key
+   typed while the card is up is forwarded verbatim with `send-keys -l --` and
+   closes the card, so it can never eat a character. `[notify] enabled = false`
+   turns it off. Details and timings: `docs/NOTIFICATIONS.md`.
+
+The hook also writes `set-option -p @perch_state <state>` on the pane, one
+spawned `tmux`, never waited on, so a user can put perch's state in a status
+line of their own. Rejected cues, and why, are in DECISIONS 12 and 15: a
+window-status flag, a status-line flash, a bottom-right toast and a macOS
+banner.
 
 Under `PERCH_NO_TMUX=1`, `PERCH_TMUX_LOG=<file>` records each invocation as one
-line, which is how the cue is tested.
+line (`notify <kind> <pane>` included), which is how the cue is tested.
 
 ## Navigation contract
 

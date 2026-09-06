@@ -110,12 +110,19 @@ perch next --client <name>            jump a client to the oldest waiting pane
 perch open --client <name>            open the dashboard in a popup on a client
 perch tui --client <name>             the dashboard itself
 perch sound test <event>              play the sound for done | needs_input | error
+perch notify test                     draw a sample notification card
 perch seen [<pane>]                   mark seen panes idle (all, or one named)
 perch install <claude|codex|pi|tmux> [--dry-run] [--print] [--apply]
 perch setup [--dry-run] [--yes] [--no-tmux] [--only ...]
 perch doctor [--json]
 perch uninstall [--dry-run] [--keep-state]
 ```
+
+When an agent finishes or needs you, perch plays a sound **and** fades a small
+card into the middle of every attached client: project, place, and what the
+agent last said. Type anything and it vanishes; the character you typed lands
+in the pane underneath. `perch notify test` shows one. See
+[docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md).
 
 - `hook` reads one JSON object on stdin and always exits 0, so a broken perch
   can never fail your agent. Outside tmux it does nothing.
@@ -298,5 +305,7 @@ correct. `needs_input` always sounds.
 - [docs/PHILOSOPHY.md](docs/PHILOSOPHY.md) — what perch is for, and what it refuses to do
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — model, layout, invariants
 - [docs/DECISIONS.md](docs/DECISIONS.md) — why it is shaped this way
+- [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md) — the sound and the card
+- [docs/TESTING.md](docs/TESTING.md) — the real-tmux harness
 - [docs/PLAN.md](docs/PLAN.md) — the original plan
 - [CHANGELOG.md](CHANGELOG.md)

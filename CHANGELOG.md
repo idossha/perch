@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A centered notification card: on `done` or `needs input`, a borderless
+  three-line popup fades in at the middle of every attached client showing the
+  project and branch, the tmux location and harness, and the agent's last
+  message, then fades out after 3.5 s. The first key you type dismisses it and
+  is forwarded to the pane underneath, so it can never eat a character.
+- `perch notify test` draws a sample card, for checking placement and colours.
+- `[notify]` config: `enabled`, `duration_ms`, and `done_style` /
+  `needs_input_style` fade overrides. See `docs/NOTIFICATIONS.md`.
+
 ### Changed
 
 - **Finished subagents are a count, not a wall of rows.** A pane with a big
