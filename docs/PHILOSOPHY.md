@@ -45,9 +45,12 @@ event must never be able to make the board wrong forever.
 `working` — a turn is in progress. `needs_input` — a real approval or question
 dialog is blocking the agent, and nothing else. `done` — finished, and you have
 not seen it. `idle` — finished, and seen. `ended` — the pane or session is gone.
+`delegating` — the pane's own turn ended but the subagents it spawned are still
+running, which is a kind of `working` and never a thing waiting on you.
 *Prevents:* `needs_input` becoming a synonym for "something happened". Claude's
 `idle_prompt` nudge is not a request, so it is logged and ignored; a stale
-`needs_input` clears on the next tool call.
+`needs_input` clears on the next tool call. And a pane is never called finished
+while work it started is still running.
 
 ## Navigation is a contract
 

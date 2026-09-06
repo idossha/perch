@@ -153,27 +153,51 @@ A harness that attributes an event to a subagent (Claude's `agent_id`, codex's
 a record of its own: a subagent runs in the parent's process, so it has no pane
 to jump to and no state of its own to sort by.
 
+**Subagents run in the background.** Claude Code ends the main agent's turn —
+`Stop` fires — while its subagents keep working, and wakes it with a task
+notification when each finishes (`SubagentStop`, then a new turn that ends with
+another `Stop`). So a pane whose own last event was `Stop` but whose children
+are still running is not idle and is not waiting on you.
+
+That is what `PaneRecord::effective_state` computes: when the pane's own state
+is `done` or `idle` and any child is `working` or `starting`, the state the user
+is shown is `working`, and the word for it is **delegating**. Everything
+user-facing reads the effective state — the TUI's state cell (`▶ delegating`,
+spinner and all), the sort rank, `perch next`, `perch status`, the `@perch_state`
+pane option, and `perch list --json`, which reports `effective_state` alongside
+the pane's own `state`.
+
 Four rules keep the list an attention list rather than a transcript:
 
-1. **A parent `Stop` retires every child still `working`.** The parent's turn
-   ending is proof its subagents ended, whatever `SubagentStop` the harness
-   lost. The child is marked `done` and its message is left alone. A child in
-   `needs_input` is not retired — it is genuinely blocked on you.
-2. **A pane reaching `idle` clears its finished children.** All three paths
-   there clear: a `Stop` on a pane you were watching (`reducer::apply_with`),
-   the seen reconciliation (`store::mark_seen`), and `perch seen`, which writes
-   the state directly — so `store::reconcile` re-applies the rule on every read
-   and persists it when the child list changed. A `UserPromptSubmit` clears
-   them too: a new turn owes nothing to the last one.
-3. **At most twenty children per pane** (`reducer::MAX_CHILDREN`). Pushing past
+1. **A pane reaching `idle` clears its finished children.** All the paths there
+   clear: a `Stop` on a pane you were watching (`reducer::apply_with`), the seen
+   reconciliation (`store::mark_seen`), and `perch seen`, which writes the state
+   directly — so `store::reconcile` re-applies the rule on every read and
+   persists it when the child list changed. A `UserPromptSubmit` clears them
+   too: a new turn owes nothing to the last one. Running children survive all of
+   it.
+2. **At most twenty children per pane** (`reducer::MAX_CHILDREN`). Pushing past
    it drops the oldest finished child, and only when none is left, the oldest
    running one.
-4. **The ten-minute TTL stays** as a backstop, applied on every write, for a
+3. **The ten-minute TTL** on finished children, applied on every write, for a
    pane that goes quiet without ever reaching `idle`.
+4. **Three backstops retire an orphaned running child** — one whose
+   `SubagentStop` the harness never sent: the parent's `SessionEnd`, the pane
+   being `ended`, and the child having claimed `working` for over two hours
+   (`reducer::CHILD_MAX_RUNNING_SECS`). Nothing else retires a running child; in
+   particular a `Stop` does not.
 
 Subagent events are never parent transitions: they do not move the pane's
-state, write `@perch_state` or log a state change. The one sound a child can
-ask for is `needs_input`, and only for Claude's `agent_needs_input`.
+state or log a state change. They do write `@perch_state` when the *effective*
+state moved — the last running child finishing ends the delegating spell — and
+the one sound a child can ask for is `needs_input`, and only for Claude's
+`agent_needs_input`.
+
+Sound follows the same reading. A parent `Stop` with running children asks for
+no chime and no card: the job is not done. The last child's `SubagentStop` is
+silent too — the parent is about to be woken, and its next `Stop` chimes
+normally. A `needs_input` on the parent or an `agent_needs_input` on a child
+chimes whatever the children are doing.
 
 On the board, a pane's harness cell carries the badge — `claude ⚑1 ▶4 ✓48`,
 zero parts omitted, blocked children in the `needs_input` colour, running ones
@@ -182,13 +206,11 @@ children that are `working` or `needs_input`; `Space` (or `Tab`) on a pane
 unfolds its finished children as dim rows, most recent first. The expansion is
 session state in `App::expanded`, keyed by pane id, and is not persisted.
 `next_waiting` and `perch next` ignore children entirely — there is nowhere
-separate to send you.
+separate to send you — but a delegating pane is never a jump target.
 
-On every read the store re-applies two invariants regardless of how a state was
-written: a pane that is not `working` has no running children (they are retired
-to `done`, since a subagent cannot outlive its parent's turn), and an `idle` pane
-keeps no finished children. This also repairs records written before these rules
-existed.
+The seen rule still applies underneath: a delegating pane's own state may flip
+`done` → `idle` because you looked at it, which is fine and invisible, since the
+effective state stays `working` until the children finish.
 
 ## State directory
 

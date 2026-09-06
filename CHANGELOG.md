@@ -26,13 +26,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on the pane to unfold the finished ones, newest first, and again to fold them
   away. Nothing is hidden that is waiting on you: a blocked subagent always has
   a row.
+- **A pane whose subagents are still working now reads `delegating`.** Claude
+  runs subagents in the background: the main agent's turn ends while they keep
+  going, and it is woken again when each finishes. Such a pane sorts with the
+  working ones, shows `▶ delegating`, and is skipped by `perch next`. `perch
+  list --json` gained an `effective_state` field next to `state`, and the
+  `@perch_state` pane option now carries the effective state.
 
 ### Fixed
 
-- **Subagents no longer sit at `working` forever.** When a pane's turn ends,
-  every subagent it spawned is marked finished — a missing `SubagentStop` from
-  the harness can no longer leave four children claiming to be running half an
-  hour later.
+- **A pane with running subagents is no longer reported as finished.** Its turn
+  ending used to mark every subagent done, chime, and draw a done card — so
+  perch told you a job was over while three agents were still working on it,
+  and threw away their rows. The turn ending now moves only the pane's own
+  state; the chime and the card come when the work is actually in.
+- **Subagents no longer sit at `working` forever.** A subagent whose
+  `SubagentStop` the harness never sent is retired when the session ends, when
+  its pane goes away, or after two hours — so a lost event can no longer leave
+  a pane delegating to a child that finished long ago.
 - **A pane you have seen sheds its finished subagents.** Previously only a new
   prompt or a `Stop` cleared them, so a pane reached `idle` still carrying the
   last turn's children. Every path to `idle` now clears them, and a pane keeps

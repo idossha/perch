@@ -156,10 +156,15 @@ collapsed behind a footer count until you press `e`.
 Panes with subagents carry a badge in the harness column — `claude ⚑1 ▶4 ✓48`,
 blocked, running and finished. Only subagents that are running or blocked get a
 row of their own; `Space` folds the finished ones back out, newest first, and
-folds them away again. A parent turn ending retires its subagents, and a pane
-you have seen drops the finished ones entirely, so the board never fills up
-with work that is over. Jumping to a subagent lands on its parent pane, because
-that is where it lives.
+folds them away again. A pane you have seen drops the finished ones entirely,
+so the board never fills up with work that is over. Jumping to a subagent lands
+on its parent pane, because that is where it lives.
+
+Claude runs subagents in the background: the main agent's turn ends while they
+keep working, and it is woken again when each one finishes. A pane in that
+state reads `▶ delegating` — it sorts with the working panes, gets no chime and
+no card, and `n` skips it. It goes back to saying `done` (and chimes on the
+next turn's end) once its subagents are in.
 
 | key | action |
 |---|---|
@@ -257,8 +262,10 @@ install, re-run `perch setup` — the `PreToolUse` hook is new.
 
 **A subagent is missing.** Only running and blocked subagents get a row; the
 finished ones are the `✓N` in the pane's badge, and `Space` shows them. They do
-not last: the pane's turn ending retires them, seeing the pane clears them, a
-pane keeps at most twenty, and anything finished is pruned after ten minutes.
+not last: seeing the pane clears them, a pane keeps at most twenty, and
+anything finished is pruned after ten minutes. A subagent still claiming
+`working` is only ever retired by the session ending, its pane going away, or
+two hours passing.
 If none ever appear at all, re-run `perch setup` — the `SubagentStart` /
 `SubagentStop` hooks were added later than the rest.
 
@@ -281,6 +288,7 @@ perch uses herdr's definitions:
 | state | meaning |
 |---|---|
 | `working` | a turn is in progress |
+| `delegating` | the pane's own turn ended, but subagents it spawned are still running |
 | `needs_input` | a real approval or question is on screen; the agent is blocked on you |
 | `done` | the turn finished and you have not looked at the pane since |
 | `idle` | ready for input, and seen |

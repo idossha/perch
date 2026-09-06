@@ -170,13 +170,16 @@ pub fn mark_seen(t: &dyn Tmux, records: &[PaneRecord]) -> usize {
         if save(&rec).is_err() {
             continue;
         }
+        // The pane option carries the state the user is shown: a pane still
+        // delegating to running subagents reads `working`, not `idle`.
+        let shown = rec.effective_state().as_str().to_string();
         cmds.push(vec![
             "set-option".into(),
             "-p".into(),
             "-t".into(),
             rec.pane.clone(),
             "@perch_state".into(),
-            "idle".into(),
+            shown,
         ]);
     }
     // One tmux invocation for the whole batch, whatever it flipped.
@@ -196,13 +199,12 @@ pub fn reconcile(
     let mut out = Vec::new();
     for mut rec in records {
         // The invariants, wherever the state came from — including `perch seen`,
-        // which writes the state without going through the reducer, and
-        // records written before these rules existed. A subagent runs inside
-        // its parent's turn, so no pane that is not `working` can have a
-        // running child; and an `idle` pane keeps no finished ones.
-        if rec.state != State::Working && rec.state != State::Starting {
-            crate::reducer::retire_children(&mut rec, &now.to_rfc3339());
-        }
+        // which writes the state without going through the reducer. A pane
+        // that is not working may well have running children: Claude runs
+        // subagents in the background and the parent's turn ends without them.
+        // Only a stuck child — one running for over two hours, so a
+        // `SubagentStop` the harness never sent — is retired on read.
+        crate::reducer::retire_stale_children(&mut rec, &now.to_rfc3339(), now);
         if rec.state == State::Idle {
             crate::reducer::clear_finished_children(&mut rec);
         }
@@ -214,12 +216,16 @@ pub fn reconcile(
                 continue;
             }
         }
+        // A pane that is gone runs nothing, subagents included.
+        if rec.state == State::Ended {
+            crate::reducer::retire_children(&mut rec, &now.to_rfc3339());
+        }
         out.push(rec);
     }
     out.sort_by(|a, b| {
-        a.state
+        a.effective_state()
             .rank()
-            .cmp(&b.state.rank())
+            .cmp(&b.effective_state().rank())
             .then_with(|| a.since.cmp(&b.since))
             .then_with(|| a.pane.cmp(&b.pane))
     });

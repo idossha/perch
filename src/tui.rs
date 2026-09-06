@@ -131,6 +131,16 @@ pub fn state_glyph(state: State, tick: u64) -> &'static str {
     }
 }
 
+/// The state word for a pane: `delegating` when the pane's own turn has ended
+/// but its background subagents have not, `working` when it is working itself.
+pub fn state_word(rec: &PaneRecord) -> &'static str {
+    if rec.is_delegating() {
+        "delegating"
+    } else {
+        rec.state.as_str()
+    }
+}
+
 /// Theme chosen by `PERCH_THEME`, else `[tui] theme` in config.toml, else dark.
 ///
 /// The config file is parsed leniently as a raw toml value so this never fights
@@ -352,8 +362,14 @@ impl App {
                 members.sort_by(|a, b| self.order(*a, *b));
             }
             groups.sort_by(|a, b| {
-                let ra = a.1.iter().map(|i| self.records[*i].state.rank()).min();
-                let rb = b.1.iter().map(|i| self.records[*i].state.rank()).min();
+                let ra =
+                    a.1.iter()
+                        .map(|i| self.records[*i].effective_state().rank())
+                        .min();
+                let rb =
+                    b.1.iter()
+                        .map(|i| self.records[*i].effective_state().rank())
+                        .min();
                 ra.cmp(&rb).then_with(|| a.0.cmp(&b.0))
             });
             for (project, members) in groups {
@@ -387,9 +403,9 @@ impl App {
     /// Within a group: urgency first, then the most recent change first.
     fn order(&self, a: usize, b: usize) -> std::cmp::Ordering {
         let (x, y) = (&self.records[a], &self.records[b]);
-        x.state
+        x.effective_state()
             .rank()
-            .cmp(&y.state.rank())
+            .cmp(&y.effective_state().rank())
             .then_with(|| y.since.cmp(&x.since))
             .then_with(|| x.pane.cmp(&y.pane))
     }
@@ -511,7 +527,7 @@ impl App {
             let oldest = self
                 .records
                 .iter()
-                .filter(|r| r.state == want)
+                .filter(|r| r.effective_state() == want)
                 .min_by(|a, b| a.since.cmp(&b.since));
             if let Some(r) = oldest {
                 return Some(Selection {
@@ -629,7 +645,7 @@ pub fn row_cells(rec: &PaneRecord, now: DateTime<Utc>) -> [String; 6] {
         rec.pane.clone(),
         project,
         rec.harness.as_str().to_string(),
-        rec.state.as_str().to_string(),
+        state_word(rec).to_string(),
         store::fmt_age(store::age_secs(&rec.since, now)),
         rec.last_message.clone().unwrap_or_default(),
     ]
@@ -712,7 +728,7 @@ fn counts_label(app: &App, members: &[usize]) -> String {
     ] {
         let n = members
             .iter()
-            .filter(|i| app.records[**i].state == st)
+            .filter(|i| app.records[**i].effective_state() == st)
             .count();
         if n > 0 {
             parts.push(format!("{}{}", state_glyph(st, 0), n));
@@ -809,17 +825,11 @@ fn pane_line(app: &App, i: usize, selected: bool, now: DateTime<Utc>, c: Cols) -
     } else {
         pick
     };
+    let shown = rec.effective_state();
     let state_txt = format!(
         "{} {}",
-        state_glyph(
-            rec.state,
-            if rec.state == State::Working {
-                app.tick
-            } else {
-                0
-            }
-        ),
-        rec.state.as_str()
+        state_glyph(shown, if shown == State::Working { app.tick } else { 0 }),
+        state_word(rec)
     );
     let mut spans = vec![
         Span::styled(marker.to_string(), Style::default().fg(t.accent)),
@@ -838,7 +848,7 @@ fn pane_line(app: &App, i: usize, selected: bool, now: DateTime<Utc>, c: Cols) -
     }
     spans.extend(badge_spans(t, rec, c.harness));
     spans.extend([
-        Span::styled(fit(&state_txt, W_STATE), t.state_style(rec.state)),
+        Span::styled(fit(&state_txt, W_STATE), t.state_style(shown)),
         Span::styled(
             format!(
                 "{:>w$} ",

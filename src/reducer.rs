@@ -9,6 +9,11 @@ const CHILD_TTL_SECS: i64 = 600;
 /// Claude does; the record is an attention list, not a transcript of it.
 pub const MAX_CHILDREN: usize = 20;
 
+/// A subagent still claiming `working` after this long is a `SubagentStop` the
+/// harness never sent. Background subagents legitimately outlive their
+/// parent's turn, so time is the only backstop left.
+pub const CHILD_MAX_RUNNING_SECS: i64 = 2 * 60 * 60;
+
 /// What applying an event asks the caller to do next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Applied {
@@ -85,9 +90,10 @@ pub fn apply_with(
         Event::SubagentStart { .. } | Event::SubagentStop { .. } => return Applied::default(),
     };
 
-    // A parent turn ending implies its subagents ended: nothing survives the
-    // turn that spawned it, whatever the harness forgot to send.
-    if matches!(parsed.event, Event::Stop { .. }) {
+    // A `Stop` does *not* retire children: Claude runs subagents in the
+    // background, so the parent's turn ends while they keep going and it is
+    // woken when each finishes. Only the session going away does.
+    if matches!(parsed.event, Event::SessionEnd) {
         retire_children(rec, now);
     }
     // A pane that is idle has nothing outstanding, so its finished children
@@ -104,9 +110,17 @@ pub fn apply_with(
         rec.state = next;
         rec.since = now.to_string();
     }
+    let mut sound = changed.then(|| sound_for(next)).flatten();
+    // The turn ended, the job did not: the subagents it spawned are still
+    // running and the pane will be woken when they finish. Chiming now would
+    // send the user to a pane that is still busy. `needs_input` is untouched —
+    // that one really is blocked on the human.
+    if sound == Some("done") && rec.has_running_children() {
+        sound = None;
+    }
     Applied {
         parent_changed: changed,
-        sound: changed.then(|| sound_for(next)).flatten(),
+        sound,
     }
 }
 
@@ -120,9 +134,10 @@ fn sound_for(state: State) -> Option<&'static str> {
 
 /// Mark every still-running subagent finished, leaving its message alone.
 ///
-/// Called when the parent's turn ends: a subagent runs inside that turn, so it
-/// cannot outlive it. Without this a `SubagentStop` the harness never sent
-/// leaves a child claiming `working` for hours.
+/// A backstop, not a rule: called when the session ends, when the pane is
+/// `ended`, and for a child that has claimed `working` for over
+/// [`CHILD_MAX_RUNNING_SECS`]. Without it a `SubagentStop` the harness never
+/// sent leaves a child running forever, and its pane delegating forever.
 pub fn retire_children(rec: &mut PaneRecord, now: &str) {
     for c in &mut rec.children {
         if c.state == State::Working || c.state == State::Starting {
@@ -206,17 +221,36 @@ fn apply_child(rec: &mut PaneRecord, agent_id: &str, parsed: &ParsedEvent, now: 
     }
 }
 
-/// Drop finished subagents older than the TTL. Called on every write, so a
-/// pane that goes quiet still sheds its children on the next event.
-fn prune_children(rec: &mut PaneRecord, now: &str) {
-    let Ok(now) = chrono::DateTime::parse_from_rfc3339(now) else {
+/// Retire subagents that have claimed `working` for over
+/// [`CHILD_MAX_RUNNING_SECS`], then drop finished ones older than the TTL.
+/// Called on every write, so a pane that goes quiet still sheds its children
+/// on the next event.
+fn prune_children(rec: &mut PaneRecord, now_str: &str) {
+    let Ok(now) = chrono::DateTime::parse_from_rfc3339(now_str) else {
         return;
     };
     let now = now.with_timezone(&chrono::Utc);
+    retire_stale_children(rec, now_str, now);
     rec.children.retain(|c| {
         !matches!(c.state, State::Done | State::Ended)
             || store::age_secs(&c.since, now) <= CHILD_TTL_SECS
     });
+}
+
+/// Retire every running subagent older than [`CHILD_MAX_RUNNING_SECS`].
+pub fn retire_stale_children(
+    rec: &mut PaneRecord,
+    now_str: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) {
+    for c in &mut rec.children {
+        if matches!(c.state, State::Working | State::Starting)
+            && store::age_secs(&c.since, now) > CHILD_MAX_RUNNING_SECS
+        {
+            c.state = State::Done;
+            c.since = now_str.to_string();
+        }
+    }
 }
 
 /// Last path component of a cwd, used as the project label.
@@ -484,7 +518,9 @@ mod subagent_tests {
     }
 
     #[test]
-    fn a_parent_stop_retires_every_running_child() {
+    fn a_parent_stop_leaves_running_children_alone_and_stays_silent() {
+        // Claude runs subagents in the background: the parent's turn ends and
+        // they keep going, so the pane is delegating, not waiting on anyone.
         let mut r = PaneRecord::new("%1", Harness::Claude, "t0");
         for id in ["a", "b"] {
             apply(
@@ -493,45 +529,117 @@ mod subagent_tests {
                 &now(),
             );
         }
-        apply(
+        let out = apply_with(
             &mut r,
-            &child(
-                "blocked",
-                Event::NeedsInput {
-                    reason: "agent_needs_input".into(),
-                },
-            ),
+            &top(Event::Stop { last_message: None }),
             &now(),
+            false,
         );
-        let t = now();
-        apply(&mut r, &top(Event::Stop { last_message: None }), &t);
-        assert_eq!(r.state, State::Done);
-        assert_eq!(r.children.len(), 3, "nothing is dropped, only retired");
+        assert_eq!(r.state, State::Done, "the pane's own turn did end");
+        assert_eq!(out.sound, None, "no chime: the job is not done");
         assert!(
-            r.children
-                .iter()
-                .filter(|c| ["a", "b"].contains(&c.id.as_str()))
-                .all(|c| c.state == State::Done && c.since == t),
+            r.children.iter().all(|c| c.state == State::Working),
             "{:?}",
             r.children
         );
-        // A child genuinely blocked on the human is not retired by the parent.
-        let blocked = r.children.iter().find(|c| c.id == "blocked").unwrap();
-        assert_eq!(blocked.state, State::NeedsInput);
-        assert_eq!(
-            blocked.last_message.as_deref(),
-            Some("agent_needs_input"),
-            "retiring never rewrites a message"
+        assert_eq!(r.effective_state(), State::Working);
+        assert!(r.is_delegating());
+
+        // The last child finishing is still silent: the parent is woken by the
+        // task notification and its next Stop chimes normally.
+        apply(
+            &mut r,
+            &child("a", Event::SubagentStop { last_message: None }),
+            &now(),
         );
+        assert_eq!(r.effective_state(), State::Working, "b is still running");
+        let out = apply(
+            &mut r,
+            &child("b", Event::SubagentStop { last_message: None }),
+            &now(),
+        );
+        assert_eq!(out.sound, None);
+        assert!(!out.parent_changed);
+        assert_eq!(r.effective_state(), State::Done, "own state, at last");
+        assert!(!r.is_delegating());
+
+        // And that next Stop does chime.
+        r.state = State::Working;
+        let out = apply_with(
+            &mut r,
+            &top(Event::Stop { last_message: None }),
+            &now(),
+            false,
+        );
+        assert_eq!(out.sound, Some("done"));
     }
 
     #[test]
-    fn reaching_idle_by_any_path_clears_finished_children() {
-        // A Stop you watched land: idle, and the children it retired go.
+    fn a_parent_needs_input_still_chimes_while_delegating() {
         let mut r = PaneRecord::new("%1", Harness::Claude, "t0");
         apply(
             &mut r,
             &child("a", Event::SubagentStart { agent_type: None }),
+            &now(),
+        );
+        let out = apply(
+            &mut r,
+            &top(Event::NeedsInput {
+                reason: "permission_prompt".into(),
+            }),
+            &now(),
+        );
+        assert_eq!(out.sound, Some("needs_input"));
+        assert_eq!(r.effective_state(), State::NeedsInput);
+    }
+
+    #[test]
+    fn a_child_running_for_two_hours_is_retired() {
+        let mut r = PaneRecord::new("%1", Harness::Claude, "t0");
+        apply(
+            &mut r,
+            &child("stuck", Event::SubagentStart { agent_type: None }),
+            &ago(CHILD_MAX_RUNNING_SECS + 60),
+        );
+        apply(
+            &mut r,
+            &child("fresh", Event::SubagentStart { agent_type: None }),
+            &now(),
+        );
+        let by = |id: &str| r.children.iter().find(|c| c.id == id).unwrap().state;
+        assert_eq!(by("stuck"), State::Done, "a SubagentStop that never came");
+        assert_eq!(by("fresh"), State::Working);
+    }
+
+    #[test]
+    fn session_end_retires_every_running_child() {
+        let mut r = PaneRecord::new("%1", Harness::Claude, "t0");
+        apply(
+            &mut r,
+            &child("a", Event::SubagentStart { agent_type: None }),
+            &now(),
+        );
+        let t = now();
+        apply(&mut r, &top(Event::SessionEnd), &t);
+        assert_eq!(r.state, State::Ended);
+        assert_eq!(r.children[0].state, State::Done);
+        assert_eq!(r.children[0].since, t);
+        assert_eq!(r.effective_state(), State::Ended);
+    }
+
+    #[test]
+    fn reaching_idle_by_any_path_clears_finished_children() {
+        // A Stop you watched land: idle, and its finished children go — but a
+        // running one stays, and keeps the pane delegating.
+        let mut r = PaneRecord::new("%1", Harness::Claude, "t0");
+        apply(
+            &mut r,
+            &child("done", Event::SubagentStop { last_message: None }),
+            &now(),
+        );
+        apply(
+            &mut r,
+            &child("busy", Event::SubagentStart { agent_type: None }),
             &now(),
         );
         apply_with(
@@ -541,10 +649,17 @@ mod subagent_tests {
             true,
         );
         assert_eq!(r.state, State::Idle);
-        assert!(r.children.is_empty(), "{:?}", r.children);
+        let ids: Vec<&str> = r.children.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["busy"], "finished cleared, running kept");
+        assert_eq!(
+            r.effective_state(),
+            State::Working,
+            "idle by the seen rule, delegating to the user"
+        );
 
         // `perch seen` and the seen reconciliation write `idle` directly; the
-        // store re-applies the same rule on every read.
+        // store re-applies the clearing rule on every read, and no longer
+        // retires the running child.
         let mut r = PaneRecord::new("%2", Harness::Claude, "t0");
         apply(
             &mut r,
@@ -558,9 +673,9 @@ mod subagent_tests {
         );
         r.state = State::Idle;
         let out = store::reconcile(vec![r], &["%2".into()], chrono::Utc::now());
-        // A subagent cannot outlive its parent's turn: an idle pane's "busy"
-        // child is retired on read, and an idle pane keeps nothing finished.
-        assert!(out[0].children.is_empty(), "{:?}", out[0].children);
+        let ids: Vec<&str> = out[0].children.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["busy"], "{:?}", out[0].children);
+        assert_eq!(out[0].effective_state(), State::Working);
     }
 
     #[test]

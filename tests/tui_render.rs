@@ -281,6 +281,46 @@ fn navigation_skips_headers_and_notes() {
     assert_eq!(app.current().unwrap().pane, "%4");
 }
 
+/// A pane whose own turn ended while its background subagents run on is
+/// delegating: it reads and sorts as working, and `n` never sends you there.
+#[test]
+fn a_delegating_pane_reads_and_sorts_as_working_and_is_never_next() {
+    let mut app = board();
+    // %1 is the only `done` pane, so with nothing flagged it is what `n` finds.
+    let mut plain = board();
+    plain.records[0].state = State::Working;
+    assert_eq!(plain.next_waiting().unwrap().pane, "%1");
+    for n in 0..3 {
+        app.records[1]
+            .children
+            .push(kid(&format!("w{n}"), Some("Explore"), State::Working, "…"));
+    }
+    let out = lines(&app).join("\n");
+    assert!(out.contains("▶ delegating"), "state cell:\n{out}");
+    assert!(!out.contains("✓ done"), "still says done:\n{out}");
+    assert!(out.contains("claude ▶3"), "badge:\n{out}");
+
+    // It sorts with the working panes, not with the finished ones.
+    let panes: Vec<&str> = app
+        .rows()
+        .iter()
+        .filter_map(|r| match r {
+            RowKind::Pane(i) => Some(app.records[*i].pane.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        panes.iter().position(|p| *p == "%1"),
+        panes.iter().position(|p| *p == "%3").map(|i| i + 1),
+        "%1 sorts among the working panes, after the older %3: {panes:?}"
+    );
+
+    // And `n` skips it: only the genuinely flagged %2 is left.
+    assert_eq!(app.next_waiting().unwrap().pane, "%2");
+    app.records[0].state = State::Idle;
+    assert!(app.next_waiting().is_none(), "{:?}", app.next_waiting());
+}
+
 #[test]
 fn next_waiting_is_the_oldest_needs_input_then_the_oldest_done() {
     let mut app = board();

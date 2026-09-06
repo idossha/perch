@@ -167,37 +167,60 @@ fn snapshot_marks_done_panes_a_focused_client_is_showing_as_idle() {
     });
 }
 
+/// A pane that is not working may perfectly well have running subagents:
+/// Claude runs them in the background and the parent's turn ends without them.
+/// Read time retires only the stuck and the dead.
 #[test]
-fn reconcile_retires_running_children_of_a_pane_that_is_not_working() {
+fn reconcile_keeps_running_children_of_an_idle_or_done_pane() {
     use perch::model::{Harness, PaneRecord, State, Subagent};
     let now = chrono::Utc::now();
-    let child = |id: &str, state: State| Subagent {
+    let child = |id: &str, state: State, age_secs: i64| Subagent {
         id: id.into(),
         agent_type: None,
         state,
-        since: "2026-01-01T00:00:00Z".into(),
+        since: (now - Duration::seconds(age_secs)).to_rfc3339(),
         last_message: None,
     };
-    let mut idle = PaneRecord::new("%1", Harness::Claude, "2026-01-01T00:00:00Z");
-    idle.state = State::Idle;
-    idle.children = vec![child("a", State::Working), child("b", State::Done)];
-    let mut done = PaneRecord::new("%2", Harness::Claude, "2026-01-01T00:00:00Z");
-    done.state = State::Done;
-    done.children = vec![child("c", State::Working)];
-    let mut working = PaneRecord::new("%3", Harness::Claude, "2026-01-01T00:00:00Z");
-    working.state = State::Working;
-    working.children = vec![child("d", State::Working)];
-
-    let out = perch::store::reconcile(
-        vec![idle, done, working],
-        &["%1".into(), "%2".into(), "%3".into()],
-        now,
-    );
+    let pane = |p: &str, state: State, children: Vec<Subagent>| {
+        let mut r = PaneRecord::new(p, Harness::Claude, &now.to_rfc3339());
+        r.state = state;
+        r.children = children;
+        r
+    };
+    let records = vec![
+        pane(
+            "%1",
+            State::Idle,
+            vec![child("a", State::Working, 5), child("b", State::Done, 5)],
+        ),
+        pane("%2", State::Done, vec![child("c", State::Working, 5)]),
+        pane("%3", State::Working, vec![child("d", State::Working, 5)]),
+        pane(
+            "%4",
+            State::Done,
+            vec![child("stuck", State::Working, 3 * 3600)],
+        ),
+        pane("%5", State::Ended, vec![child("orphan", State::Working, 5)]),
+    ];
+    let live: Vec<String> = ["%1", "%2", "%3", "%4", "%5"]
+        .iter()
+        .map(|p| p.to_string())
+        .collect();
+    let out = perch::store::reconcile(records, &live, now);
     let by = |pane: &str| out.iter().find(|r| r.pane == pane).expect(pane);
-    // An idle pane keeps nothing: its stale running child is retired, then cleared.
-    assert!(by("%1").children.is_empty(), "{:?}", by("%1").children);
-    // A done pane keeps the retired child, now finished, until it is seen.
-    assert_eq!(by("%2").children[0].state, State::Done);
+    // An idle pane drops its finished child and keeps the running one, which
+    // keeps the pane delegating.
+    let ids: Vec<&str> = by("%1").children.iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(ids, ["a"], "{:?}", by("%1").children);
+    assert_eq!(by("%1").effective_state(), State::Working);
+    // A done pane keeps its running child, and reads as working.
+    assert_eq!(by("%2").children[0].state, State::Working);
+    assert_eq!(by("%2").effective_state(), State::Working);
     // A working pane's running child is untouched.
     assert_eq!(by("%3").children[0].state, State::Working);
+    // A child running for three hours is a SubagentStop that never came.
+    assert_eq!(by("%4").children[0].state, State::Done);
+    assert_eq!(by("%4").effective_state(), State::Done);
+    // A pane that is gone runs nothing.
+    assert_eq!(by("%5").children[0].state, State::Done);
 }

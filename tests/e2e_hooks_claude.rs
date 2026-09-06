@@ -109,9 +109,14 @@ fn claude_hooks_drive_state_through_a_real_server() {
     assert_eq!(rec["children"].as_array().unwrap().len(), 1);
     assert_eq!(rec["project"], "perch");
 
-    // A fan-out of two, then the parent's turn ends: the parent stopping is
-    // the proof its subagents stopped, whatever SubagentStop the harness lost.
+    // A fan-out of two, then the parent's turn ends. Claude runs subagents in
+    // the background: the parent's own turn is over, but the pane is still
+    // delegating, so everything the user sees says working.
     s.tmux(&["select-window", "-t", "one:1"]);
+    assert!(wait_for(
+        || s.client_pane(&client.name) == b,
+        Duration::from_secs(2)
+    ));
     s.hook(&a, "claude", &f("user_prompt_submit.json"));
     s.hook(&a, "claude", &f("subagent_start.json"));
     s.hook(
@@ -124,13 +129,32 @@ fn claude_hooks_drive_state_through_a_real_server() {
     assert!(kids.iter().all(|c| c["state"] == "working"), "{kids:?}");
 
     s.hook(&a, "claude", &f("stop.json"));
-    assert_eq!(s.state_of(&a), "done");
+    assert_eq!(s.state_of(&a), "done", "the parent's own turn did end");
+    assert_eq!(
+        s.effective_of(&a),
+        "working",
+        "its subagents did not: the pane is delegating"
+    );
     let kids = children_of(&s, &a);
     assert_eq!(kids.len(), 2, "{kids:?}");
     assert!(
-        kids.iter().all(|c| c["state"] == "done"),
-        "a parent stop retires its children: {kids:?}"
+        kids.iter().all(|c| c["state"] == "working"),
+        "a parent stop no longer retires its children: {kids:?}"
     );
+    assert_pane_state(&s, &a, "working");
+
+    // Both subagents finish: nothing is waiting on them any more, so the pane
+    // reads as what it is.
+    s.hook(&a, "claude", &f("subagent_stop_event.json"));
+    assert_eq!(s.effective_of(&a), "working", "sub-8 is still running");
+    s.hook(
+        &a,
+        "claude",
+        &f("subagent_stop_event.json").replace("sub-7", "sub-8"),
+    );
+    assert_eq!(s.effective_of(&a), s.state_of(&a));
+    assert_eq!(s.state_of(&a), "done");
+    assert_pane_state(&s, &a, "done");
 
     // Look at the pane again: it is idle, and finished children have nothing
     // left to say, so they are gone from the record.

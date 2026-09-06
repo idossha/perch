@@ -53,8 +53,13 @@ pub fn run(harness: Harness) -> anyhow::Result<()> {
             rec.location = Some(loc);
         }
     }
+    let eff_before = rec.effective_state();
     let applied = reducer::apply_with(&mut rec, &parsed, &now, seen);
     let changed = applied.parent_changed;
+    // A subagent event moves no pane state, but it can move the state the user
+    // is *shown*: the last running child finishing ends the pane's delegating
+    // spell. Worth the pane option, never worth a sound or a card.
+    let eff_changed = rec.effective_state() != eff_before;
 
     // A tool call or an observed notice on a pane perch has never seen is not
     // worth inventing a record for; the next real event will make one.
@@ -79,6 +84,13 @@ pub fn run(harness: Harness) -> anyhow::Result<()> {
 
     if changed {
         cue(&rec, &pane);
+    } else if eff_changed {
+        tmux::current().batch(&[opt(
+            "-p",
+            &pane,
+            "@perch_state",
+            rec.effective_state().as_str(),
+        )]);
     }
     Ok(())
 }
@@ -107,10 +119,11 @@ pub fn seen(pane: &str) -> bool {
     }
     rec.state = crate::model::State::Idle;
     rec.since = store::now_rfc3339();
+    let shown = rec.effective_state().as_str().to_string();
     let _ = store::save(&rec);
     // Synchronous: `seen` is called from the TUI's popup and from `perch
     // next`, both of which exit immediately afterwards.
-    tmux::current().run(&[opt("-p", pane, "@perch_state", "idle")]);
+    tmux::current().run(&[opt("-p", pane, "@perch_state", &shown)]);
     true
 }
 
@@ -122,8 +135,12 @@ pub fn seen(pane: &str) -> bool {
 /// popups it draws are its problem, and the hook is back inside its budget
 /// whatever tmux does with them.
 fn cue(rec: &PaneRecord, pane: &str) {
-    tmux::current().batch(&[opt("-p", pane, "@perch_state", rec.state.as_str())]);
-    if let Some(kind) = notify::kind_for(rec.state) {
+    // Both the option and the card speak the *effective* state: a pane whose
+    // turn ended while its subagents run on is still working, so it gets no
+    // done card and reads `working` in a hand-written status line.
+    let shown = rec.effective_state();
+    tmux::current().batch(&[opt("-p", pane, "@perch_state", shown.as_str())]);
+    if let Some(kind) = notify::kind_for(shown) {
         if config::load().notify.enabled {
             notify::spawn_detached(kind, pane);
         }

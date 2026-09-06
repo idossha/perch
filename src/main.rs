@@ -308,7 +308,20 @@ fn cmd_doctor(json: bool) -> anyhow::Result<()> {
 fn cmd_list(json: bool) -> anyhow::Result<()> {
     let recs = store::snapshot(tmux::current().as_ref());
     if json {
-        println!("{}", serde_json::to_string_pretty(&recs)?);
+        // `state` is the pane's own; `effective_state` is what the user is
+        // shown, and the two differ exactly while the pane is delegating.
+        let mut out = Vec::new();
+        for r in &recs {
+            let mut v = serde_json::to_value(r)?;
+            if let Some(o) = v.as_object_mut() {
+                o.insert(
+                    "effective_state".into(),
+                    serde_json::json!(r.effective_state().as_str()),
+                );
+            }
+            out.push(v);
+        }
+        println!("{}", serde_json::to_string_pretty(&out)?);
         return Ok(());
     }
     let now = Utc::now();
@@ -324,7 +337,7 @@ fn cmd_list(json: bool) -> anyhow::Result<()> {
 
 fn cmd_status(format: StatusFormat) -> anyhow::Result<()> {
     let recs = store::snapshot(tmux::current().as_ref());
-    let count = |s: State| recs.iter().filter(|r| r.state == s).count();
+    let count = |s: State| recs.iter().filter(|r| r.effective_state() == s).count();
     let (waiting, done, working) = (
         count(State::NeedsInput),
         count(State::Done),
@@ -411,7 +424,7 @@ fn cmd_next(client: Option<&str>) -> anyhow::Result<()> {
     let recs = store::snapshot(t.as_ref());
     let oldest = |want: State| {
         recs.iter()
-            .filter(|r| r.state == want)
+            .filter(|r| r.effective_state() == want)
             .min_by(|a, b| a.since.cmp(&b.since))
     };
     let Some(target) = oldest(State::NeedsInput).or_else(|| oldest(State::Done)) else {

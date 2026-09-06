@@ -231,6 +231,76 @@ fn a_parent_transition_sets_the_pane_state_and_asks_for_a_card() {
     assert_eq!(body.lines().filter(|l| l.starts_with("notify ")).count(), 1);
 }
 
+/// A pane delegating to background subagents gets no done card, and its pane
+/// option says `working`. The chime comes on the Stop that ends the whole job.
+#[test]
+fn a_stop_with_running_subagents_asks_for_no_card_and_reads_as_working() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path();
+    let log = p.join("tmux.log");
+    let hook = |body: &str| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_perch"));
+        cmd.args(["hook", "claude"])
+            .env("PERCH_STATE_DIR", p)
+            .env("PERCH_CONFIG_DIR", p.join("config"))
+            .env("PERCH_NO_SOUND", "1")
+            .env("PERCH_NO_TMUX", "1")
+            .env("PERCH_TMUX_LOG", &log)
+            .env("TMUX_PANE", "%999")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut child = cmd.spawn().unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(body.as_bytes())
+            .unwrap();
+        assert!(child.wait().unwrap().success());
+    };
+    let lines = || {
+        std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .lines()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+    };
+
+    hook(&fixture("user_prompt_submit.json"));
+    hook(&fixture("subagent_start.json"));
+    hook(&fixture("stop.json"));
+    assert_eq!(
+        lines().last().map(String::as_str),
+        Some("set-option -p -t %999 @perch_state working"),
+        "still delegating: {:?}",
+        lines()
+    );
+    assert!(
+        !lines().iter().any(|l| l.starts_with("notify ")),
+        "no done card while its subagent runs: {:?}",
+        lines()
+    );
+
+    // The subagent finishes: the pane reads as its own state, still silently.
+    hook(&fixture("subagent_stop_event.json"));
+    assert_eq!(
+        lines().last().map(String::as_str),
+        Some("set-option -p -t %999 @perch_state done")
+    );
+    assert!(!lines().iter().any(|l| l.starts_with("notify ")));
+
+    // The wake-up turn ends with a Stop of its own: that one is the news.
+    hook(&fixture("user_prompt_submit.json"));
+    hook(&fixture("stop.json"));
+    assert_eq!(
+        lines().last().map(String::as_str),
+        Some("notify done %999"),
+        "{:?}",
+        lines()
+    );
+}
+
 /// `[notify] enabled = false` leaves the sound and the pane option alone and
 /// asks for no card at all.
 #[test]

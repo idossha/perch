@@ -301,12 +301,22 @@ impl Server {
 
     /// The recorded state of one pane, or `""` when it has no record.
     pub fn state_of(&self, pane: &str) -> String {
+        self.field_of(pane, "state")
+    }
+
+    /// The state the user is shown: `working` while the pane is delegating to
+    /// background subagents, whatever its own state says.
+    pub fn effective_of(&self, pane: &str) -> String {
+        self.field_of(pane, "effective_state")
+    }
+
+    fn field_of(&self, pane: &str, key: &str) -> String {
         self.records()
             .as_array()
             .map(|rs| {
                 rs.iter()
                     .find(|r| r["pane"] == pane)
-                    .and_then(|r| r["state"].as_str())
+                    .and_then(|r| r[key].as_str())
                     .unwrap_or("")
                     .to_string()
             })

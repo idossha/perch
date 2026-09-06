@@ -332,6 +332,11 @@ which point the reconciliation should be rate-limited rather than removed.
 
 ## 14. Finished subagents fold into the badge; a parent stop retires its children — 2026-09-05
 
+> **Superseded in part by decision 16.** The retire-on-`Stop` half of this entry
+> was wrong: Claude runs subagents in the background, so a parent `Stop` is not
+> proof its subagents ended. The folding, the `idle` clearing, the cap and the
+> TTL all stand.
+
 **Decision.** A pane's finished subagents are a count in its harness cell
 (`claude ▶4 ✓48`), not rows. Only children that are `working` or `needs_input`
 get a row; `Space` or `Tab` unfolds the rest, dim and newest first, as session
@@ -382,3 +387,39 @@ the hook spawns a detached `perch notify` and returns.
 (`display-popup -s` run within the popup), which needs tmux 3.2+; below that
 perch degrades to sound only. Two cards in a row replace each other rather than
 stack. `[notify] enabled = false` turns it off.
+
+## 16. A pane with running subagents is delegating, not idle — 2026-09-05
+
+**Decision.** A pane whose own state is `done` or `idle` while any subagent is
+`working` or `starting` has an `effective_state` of `working`, shown as
+**delegating**. Everything user-facing reads it: the TUI state cell and its
+spinner, the sort rank, `perch next` (a delegating pane is never a jump
+target), `perch status` counts, the `@perch_state` pane option, and
+`perch list --json`, which reports `effective_state` next to `state`. A parent
+`Stop` with running children asks for no chime and no card, and the last
+child's `SubagentStop` is silent too. This **supersedes the retire-on-`Stop`
+rule of decision 14** and the read-time invariant "a pane that is not working
+has no running subagents"; running children are now retired only by the
+parent's `SessionEnd`, by the pane being `ended`, and by a two-hour age cap
+(`reducer::CHILD_MAX_RUNNING_SECS`).
+
+**Why.** The assumption behind 14 — a subagent runs inside its parent's turn —
+is not how Claude Code works. Subagents run in the background: the main agent's
+turn ends and `Stop` fires while they keep working, and it is woken by a task
+notification when each finishes. Retiring on `Stop` therefore erased live work,
+and the chime it fired sent the user to a pane that was still busy — the exact
+failure the states exist to prevent. Splitting the pane's own state from the
+state it is shown as keeps the reducer honest about the events it saw while the
+board stays honest about what needs a human.
+
+**Cost.** A record now carries two states a reader must not confuse: `state` is
+the pane's own and is what the reducer and the seen rule move; `effective_state`
+is what the user is shown. A pane can sit `done`-but-delegating indefinitely if
+a `SubagentStop` is lost, which is what the two-hour cap bounds — coarse on
+purpose, since a legitimate subagent can run for a long time. The
+delegating-to-done transition writes `@perch_state` from a subagent event,
+which previously never touched tmux.
+
+**Revisit if** a harness starts reporting subagents that genuinely cannot
+outlive the parent turn, or if the two-hour cap proves either too slow to
+repair a lost `SubagentStop` or too quick for a real long-running fan-out.

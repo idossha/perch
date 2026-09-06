@@ -195,6 +195,34 @@ pub struct Subagent {
 }
 
 impl PaneRecord {
+    /// `true` when at least one subagent is still running under this pane.
+    pub fn has_running_children(&self) -> bool {
+        self.children
+            .iter()
+            .any(|c| matches!(c.state, State::Working | State::Starting))
+    }
+
+    /// The state the user is shown, which is not always the pane's own.
+    ///
+    /// Claude Code runs subagents in the background: the main agent's turn
+    /// ends — `Stop` fires — while its subagents keep working, and it is woken
+    /// again when each finishes. A pane whose own last event was `Stop` but
+    /// whose children are still running is therefore not waiting on the human;
+    /// it is *delegating*, and delegating is a kind of working.
+    pub fn effective_state(&self) -> State {
+        if matches!(self.state, State::Done | State::Idle) && self.has_running_children() {
+            State::Working
+        } else {
+            self.state
+        }
+    }
+
+    /// `true` when [`effective_state`](Self::effective_state) is working only
+    /// because subagents are: the word for the state cell is `delegating`.
+    pub fn is_delegating(&self) -> bool {
+        self.state != State::Working && self.effective_state() == State::Working
+    }
+
     pub fn new(pane: &str, harness: Harness, now: &str) -> Self {
         PaneRecord {
             pane: pane.to_string(),
