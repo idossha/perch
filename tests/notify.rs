@@ -59,13 +59,40 @@ fn record() -> PaneRecord {
     r
 }
 
+/// The card as the user reads it: SGR stripped, padding kept.
+const DONE_CARD: &str = "\
+\x20 ✓ done  perch (main)
+  editor.1  ·  claude
+  Added the reducer and its tests.";
+
+const NEEDS_INPUT_CARD: &str = "\
+\x20 ⚑ needs input  perch (main)
+  editor.1  ·  claude
+  Waiting on you: allow the write?";
+
+#[test]
+fn the_rendered_card_reads_the_same_for_both_kinds() {
+    let cfg = Config::default();
+    let c = notify::card(Kind::Done, &record(), &cfg);
+    assert_eq!(notify::render_plain(&c), DONE_CARD);
+
+    let mut r = record();
+    r.state = State::NeedsInput;
+    r.last_message = Some("Waiting on you: allow the write?".into());
+    let c = notify::card(Kind::NeedsInput, &r, &cfg);
+    assert_eq!(notify::render_plain(&c), NEEDS_INPUT_CARD);
+}
+
 #[test]
 fn the_card_carries_project_location_harness_and_the_last_message() {
-    let c = notify::card(Kind::Done, &record());
-    assert_eq!(c.lines[0], "✓ done  perch (main)");
-    assert_eq!(c.lines[1], "editor.1  claude");
-    assert_eq!(c.lines[2], "Added the reducer and its tests.");
-    assert_eq!(c.lines.len(), 3, "three lines, and the popup is three tall");
+    let c = notify::card(Kind::Done, &record(), &Config::default());
+    assert_eq!(
+        c.lines[0], "\x1b[1;38;5;114m✓ done\x1b[0m  perch\x1b[2m (main)\x1b[0m",
+        "the heading is the dashboard's done colour, bold; the branch is dim"
+    );
+    assert_eq!(c.lines[1], "\x1b[2meditor.1  ·  claude\x1b[0m");
+    assert_eq!(c.lines[2], "\x1b[0mAdded the reducer and its tests.\x1b[0m");
+    assert_eq!(c.lines.len(), 3, "three lines inside the rounded border");
 }
 
 #[test]
@@ -76,14 +103,24 @@ fn the_width_is_clamped_at_both_ends() {
     r.branch = None;
     r.location = Some("w".into());
     r.last_message = None;
-    assert_eq!(notify::card(Kind::Done, &r).width, notify::MIN_WIDTH);
+    assert_eq!(
+        notify::card(Kind::Done, &r, &Config::default()).width,
+        notify::MIN_WIDTH
+    );
 
     // A novel for a last message: capped, and cut with an ellipsis to fit.
     r.last_message = Some("word ".repeat(200));
-    let c = notify::card(Kind::Done, &r);
+    let c = notify::card(Kind::Done, &r, &Config::default());
     assert_eq!(c.width, notify::MAX_WIDTH);
-    assert!(c.lines[2].ends_with('…'));
-    assert!(c.lines.iter().all(|l| notify::width(l) <= c.width - 4));
+    let plain = notify::strip_sgr(&c.lines[2]);
+    assert!(plain.ends_with('…'));
+    assert_eq!(notify::width(&plain), c.width - 2 * notify::PAD);
+    for line in notify::render_plain(&c).lines() {
+        assert!(
+            notify::width(line) <= c.width,
+            "{line:?} overflows the card"
+        );
+    }
 }
 
 #[test]
@@ -95,37 +132,81 @@ fn one_popup_is_drawn_per_attached_client() {
     for (i, client) in ["/dev/ttys001", "/dev/ttys002"].iter().enumerate() {
         let argv = &calls[i];
         assert!(
-            argv.starts_with(&format!("display-popup -c {client} -B -E -x C -y C -w ")),
-            "borderless and centered on its own client: {argv}"
+            argv.starts_with(&format!(
+                "display-popup -c {client} -b rounded -E -x C -y C -w "
+            )),
+            "a rounded box centered on its own client: {argv}"
         );
-        assert!(argv.contains(" -h 3 -s bg=colour235,fg=colour240 -- "));
+        assert!(
+            argv.contains(" -h 5 -s bg=default,fg=default -S fg=colour240,dim -- "),
+            "the terminal's own background, a dim grey border: {argv}"
+        );
         assert!(
             argv.contains(&format!("notify-body done 3500 --client {client} --line ")),
             "the body is told its client and its lines: {argv}"
         );
         assert_eq!(argv.matches("--line ").count(), 3);
-        assert!(argv.contains("--line ✓ done  perch (main)"));
+        assert!(argv.contains("--line \x1b[1;38;5;114m✓ done\x1b[0m  perch"));
     }
 }
 
+/// The popup is two columns wider than the text field: the border's own.
 #[test]
-fn a_needs_input_card_fades_up_through_its_own_colours() {
+fn the_popup_is_the_text_field_plus_its_border() {
+    let t = Fake::with(&["/dev/ttys001"]);
+    notify::show(&t, &Config::default(), Kind::Done, &record());
+    let card = notify::card(Kind::Done, &record(), &Config::default());
+    assert!(t.calls()[0].contains(&format!(" -w {} -h 5 ", card.width + 2)));
+}
+
+#[test]
+fn a_needs_input_card_wears_its_own_accent() {
     let t = Fake::with(&["/dev/ttys001"]);
     let mut r = record();
     r.state = State::NeedsInput;
     notify::show(&t, &Config::default(), Kind::NeedsInput, &r);
     let argv = t.calls().remove(0);
     assert!(argv.contains("notify-body needs_input 3500"));
-    assert!(argv.contains("--line ⚑ needs input  perch (main)"));
+    assert!(argv.contains("--line \x1b[1;38;5;203m⚑ needs input\x1b[0m  perch"));
 
     let cfg = Config::default();
-    let up = notify::Kind::NeedsInput.styles(&cfg);
-    assert_eq!(up[0], "bg=colour235,fg=colour240", "starts dim");
-    assert_eq!(up[2], "bg=colour160,fg=colour255,bold", "ends full");
-    let steps = notify::schedule(&up, 3500);
-    assert_eq!(steps.len(), 6, "three up, three back down");
-    assert_eq!(steps[2].1, up[2]);
-    assert_eq!(steps[5].1, up[0], "the card ends as dim as it began");
+    assert_eq!(Kind::NeedsInput.accent(&cfg), "colour203");
+    assert_eq!(Kind::Done.accent(&cfg), "colour114");
+
+    // The fade dims the text and the border together, and ends where it began.
+    let steps = notify::schedule(3500);
+    assert_eq!(
+        steps.iter().map(|(_, l)| *l).collect::<Vec<u8>>(),
+        [0, 1, 2, 2, 1, 0],
+        "three up, three back down"
+    );
+    assert_eq!(notify::border_style(&cfg, 0), "fg=colour240,dim");
+    assert_eq!(notify::border_style(&cfg, 2), "fg=colour240");
+    let line = &notify::card(Kind::NeedsInput, &r, &cfg).lines[0];
+    assert!(
+        notify::fade(line, 0).starts_with("\x1b[2;38;5;203m"),
+        "dim first"
+    );
+    assert_eq!(
+        notify::fade(line, 2),
+        *line,
+        "and full at the top of the fade"
+    );
+    assert_eq!(
+        notify::strip_sgr(&notify::fade(line, 0)),
+        notify::strip_sgr(line)
+    );
+}
+
+/// An accent override reaches the card without any other key being set.
+#[test]
+fn the_accent_and_border_colours_come_from_the_config() {
+    let mut cfg = Config::default();
+    cfg.notify.accent_done = "green".into();
+    cfg.notify.border = "colour238".into();
+    let c = notify::card(Kind::Done, &record(), &cfg);
+    assert!(c.lines[0].starts_with("\x1b[1;32m✓ done"));
+    assert_eq!(notify::border_style(&cfg, 1), "fg=colour238");
 }
 
 /// The passthrough guarantee: a key typed while the card is up dismisses it

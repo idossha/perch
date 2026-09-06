@@ -14,66 +14,40 @@ pub struct Config {
     pub watch_commands: Vec<String>,
 }
 
-/// `[notify]`. Unknown keys — the retired `desktop`, and the whole retired
-/// `[toast]` table — are ignored rather than failing the parse.
+/// `[notify]`. Unknown keys — the retired `desktop`, the retired style
+/// arrays, and the whole retired `[toast]` table — are ignored rather than
+/// failing the parse.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Notify {
     pub enabled: bool,
     /// How long a card stays up, fades included.
     pub duration_ms: u64,
-    /// Three tmux styles, dim to full, the `done` card fades through.
-    pub done_style: Vec<String>,
-    /// The same three for `needs_input`.
-    pub needs_input_style: Vec<String>,
+    /// Colour of `✓ done` on the card, a tmux/terminal colour name.
+    pub accent_done: String,
+    /// Colour of `⚑ needs input`.
+    pub accent_needs_input: String,
+    /// Colour of the card's rounded border.
+    pub border: String,
 }
 
-/// The built-in fade for a finished turn: green, dark to bright.
-pub const DONE_STYLE: [&str; 3] = [
-    "bg=colour235,fg=colour240",
-    "bg=colour22,fg=colour250",
-    "bg=colour28,fg=colour255,bold",
-];
-
-/// The built-in fade for a turn that wants you: red, dark to bright.
-pub const NEEDS_INPUT_STYLE: [&str; 3] = [
-    "bg=colour235,fg=colour240",
-    "bg=colour88,fg=colour250",
-    "bg=colour160,fg=colour255,bold",
-];
+/// The dashboard's `done` colour, so a card and a row agree.
+pub const ACCENT_DONE: &str = "colour114";
+/// The dashboard's `needs_input` colour.
+pub const ACCENT_NEEDS_INPUT: &str = "colour203";
+/// Grey enough to read as chrome rather than as a banner.
+pub const BORDER: &str = "colour240";
 
 impl Default for Notify {
     fn default() -> Self {
         Notify {
             enabled: true,
             duration_ms: 3500,
-            done_style: Vec::new(),
-            needs_input_style: Vec::new(),
+            accent_done: ACCENT_DONE.into(),
+            accent_needs_input: ACCENT_NEEDS_INPUT.into(),
+            border: BORDER.into(),
         }
     }
-}
-
-impl Notify {
-    pub fn done_styles(&self) -> [String; 3] {
-        styles(&self.done_style, &DONE_STYLE)
-    }
-
-    pub fn needs_input_styles(&self) -> [String; 3] {
-        styles(&self.needs_input_style, &NEEDS_INPUT_STYLE)
-    }
-}
-
-/// An override of exactly three styles wins; anything else keeps the built-in,
-/// because a half-configured fade is worse than none.
-fn styles(over: &[String], built_in: &[&str; 3]) -> [String; 3] {
-    if over.len() == 3 {
-        return [over[0].clone(), over[1].clone(), over[2].clone()];
-    }
-    [
-        built_in[0].to_string(),
-        built_in[1].to_string(),
-        built_in[2].to_string(),
-    ]
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -152,24 +126,37 @@ mod tests {
         assert_eq!(c.cooldown_secs, 3);
         assert!(c.notify.enabled);
         assert_eq!(c.notify.duration_ms, 3500);
-        assert_eq!(c.notify.done_styles()[2], "bg=colour28,fg=colour255,bold");
-        assert_eq!(
-            c.notify.needs_input_styles()[2],
-            "bg=colour160,fg=colour255,bold"
-        );
+        assert_eq!(c.notify.accent_done, "colour114", "the dashboard's done");
+        assert_eq!(c.notify.accent_needs_input, "colour203");
+        assert_eq!(c.notify.border, "colour240");
     }
 
-    /// Three styles or none: a two-entry override is a typo, not a fade.
+    /// The colours are three plain names, overridable one at a time.
     #[test]
-    fn a_style_override_must_be_all_three() {
+    fn the_accents_and_the_border_are_overridable() {
         let c: Config = toml::from_str(
-            "[notify]\nenabled = false\nduration_ms = 900\ndone_style = [\"a\", \"b\", \"c\"]\nneeds_input_style = [\"x\"]\n",
+            "[notify]\nenabled = false\nduration_ms = 900\naccent_done = \"colour42\"\n",
         )
         .unwrap();
         assert!(!c.notify.enabled);
         assert_eq!(c.notify.duration_ms, 900);
-        assert_eq!(c.notify.done_styles(), ["a", "b", "c"]);
-        assert_eq!(c.notify.needs_input_styles()[0], DONE_STYLE[0]);
+        assert_eq!(c.notify.accent_done, "colour42");
+        assert_eq!(
+            c.notify.accent_needs_input, ACCENT_NEEDS_INPUT,
+            "one override does not blank the others"
+        );
+        assert_eq!(c.notify.border, BORDER);
+    }
+
+    /// The retired style arrays still parse, and are ignored.
+    #[test]
+    fn the_old_style_arrays_are_ignored_not_fatal() {
+        let c: Config = toml::from_str(
+            "[notify]\ndone_style = [\"a\", \"b\", \"c\"]\nneeds_input_style = [\"x\"]\n",
+        )
+        .unwrap();
+        assert!(c.notify.enabled);
+        assert_eq!(c.notify.accent_done, ACCENT_DONE);
     }
 
     /// The retired `[toast]` table and the retired `[notify] desktop` key are

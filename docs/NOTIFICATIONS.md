@@ -5,24 +5,37 @@ you having to look anywhere.
 
 ## What you see
 
-On a transition into `done` or `needs_input`, perch draws a borderless
-three-line card in the **center of every attached client**:
+On a transition into `done` or `needs_input`, perch draws a small card with a
+**rounded grey border** in the center of every attached client. The popup keeps
+the terminal's own background (`-s bg=default,fg=default`), so it reads as part
+of the screen rather than as a banner:
 
 ```
-        ✓ done  perch (main)
-          editor.1  claude
-   Added the reducer and its tests.
+╭──────────────────────────────────╮
+│  ✓ done  perch (main)            │
+│  editor.1  ·  claude             │
+│  Added the reducer and its tests.│
+╰──────────────────────────────────╯
 ```
 
 | Line | Content |
 | --- | --- |
-| 1 | `✓ done` or `⚑ needs input`, then `<project> (<branch>)` |
-| 2 | the pane's tmux location, then the harness (`claude`, `codex`, `pi`) |
-| 3 | the agent's last message, cut with an `…` when it does not fit |
+| 1 | `✓ done` / `⚑ needs input` in the dashboard's state colour, bold; then `<project>` in the normal foreground and ` (<branch>)` dim |
+| 2 | the pane's tmux location and the harness, both dim, joined by `  ·  ` |
+| 3 | the agent's last message, normal foreground, cut with an `…` when it does not fit |
 
-The card is as wide as its widest line plus four columns, clamped to 30–70
-columns, and always three rows tall. Missing fields degrade: no project shows
-`—`, no location shows the pane id, no last message shows an empty line.
+The colours are the dashboard's own: `colour114` for `done`, `colour203` for
+`needs_input`, `colour240` for the border. The card's text field is as wide as
+its widest line plus two columns of padding each side, clamped to **36–72**
+columns; the popup is two columns wider again for the border it draws, and five
+rows tall (`-h 5`: three lines between the two border rows).
+
+Missing fields degrade: no project shows `—`, no location shows the pane id, no
+last message shows an empty line.
+
+The body prints raw text into the popup's pty, where `#[fg=…]` means nothing —
+so the colours are ANSI SGR sequences (`\x1b[1;38;5;114m` and friends) built
+from the configured colour names.
 
 Every attached client gets its own popup, centered on *that* client's screen. A
 second card on the same client replaces the first, so two transitions in a row
@@ -43,14 +56,14 @@ Default total: **3500 ms**, fades included.
 
 | Phase | Duration | Steps |
 | --- | --- | --- |
-| Fade in | 300 ms | 3 restyles, dim → mid → full |
+| Fade in | 300 ms | 3 steps, dim → normal → full |
 | Hold | the remainder | — |
-| Fade out | 500 ms | the same 3 in reverse, full → mid → dim |
+| Fade out | 500 ms | the same 3 in reverse |
 
-The fade is real, not simulated: the popup's body runs `tmux display-popup -s
-<style>` **from inside the popup**, which restyles it in place. `done` fades
-through green (`colour235` → `colour22` → `colour28`), `needs_input` through
-red (`colour235` → `colour88` → `colour160`).
+Nothing flashes: no background ever changes hands. Each step restyles the
+border from inside the popup (`tmux display-popup -S fg=colour240[,dim]`) and
+reprints the three lines with different SGR — level 0 dims every run, level 1
+drops the bold, level 2 is the card as designed.
 
 ## The passthrough guarantee
 
@@ -75,23 +88,17 @@ at all.
 enabled = true      # false: sound and @perch_state only, no card
 duration_ms = 3500  # total, fades included
 
-# Optional. Three tmux styles each, dim → mid → full. Fewer than three is
-# treated as a typo and the built-in fade is kept.
-done_style = [
-  "bg=colour235,fg=colour240",
-  "bg=colour22,fg=colour250",
-  "bg=colour28,fg=colour255,bold",
-]
-needs_input_style = [
-  "bg=colour235,fg=colour240",
-  "bg=colour88,fg=colour250",
-  "bg=colour160,fg=colour255,bold",
-]
+# Colour names, tmux-style (`colour114`, `114`, `green`, `brightred`).
+accent_done = "colour114"         # the dashboard's done colour
+accent_needs_input = "colour203"  # …and its needs_input colour
+border = "colour240"              # the rounded border
 ```
 
-Retired keys — the whole `[toast]` table, and `[notify] desktop` /
-`tmux_message` — still parse and are ignored, so an old config file keeps
-working.
+An unrecognised colour name falls back to the terminal's default foreground.
+
+Retired keys — the whole `[toast]` table, `[notify] desktop` / `tmux_message`,
+and the old `done_style` / `needs_input_style` fade arrays — still parse and are
+ignored, so an old config file keeps working.
 
 ## Checking it
 
