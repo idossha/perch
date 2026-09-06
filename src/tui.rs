@@ -3,6 +3,7 @@
 //! Rows are grouped by project by default and each state carries a glyph as
 //! well as a colour, so the board still reads on a monochrome terminal.
 
+use std::collections::HashSet;
 use std::io;
 use std::time::{Duration, Instant};
 
@@ -227,6 +228,9 @@ pub struct App {
     pub unwired: Vec<String>,
     pub grouped: bool,
     pub show_ended: bool,
+    /// Panes whose finished subagents are unfolded, keyed by pane id. Session
+    /// state: a fold is a way of looking at the board, not a preference.
+    pub expanded: HashSet<String>,
     pub show_help: bool,
     pub theme: Theme,
     /// Refresh counter, drives the working spinner.
@@ -249,6 +253,7 @@ impl App {
             unwired: Vec::new(),
             grouped: true,
             show_ended: false,
+            expanded: HashSet::new(),
             show_help: false,
             theme: DARK,
             tick: 0,
@@ -277,12 +282,40 @@ impl App {
         app
     }
 
+    /// The child rows for a pane: what is still running, plus — only when the
+    /// pane is expanded — what has finished, most recent first.
+    ///
+    /// Finished children are the bulk of a big fan-out and none of them is
+    /// waiting on you; they live in the pane's badge until you ask.
     fn visible_children<'a>(&self, rec: &'a PaneRecord) -> Vec<(usize, &'a Subagent)> {
-        rec.children
+        let mut out: Vec<(usize, &Subagent)> = rec
+            .children
             .iter()
             .enumerate()
-            .filter(|(_, c)| self.show_ended || c.state != State::Ended)
-            .collect()
+            .filter(|(_, c)| !c.state.is_finished())
+            .collect();
+        if self.expanded.contains(&rec.pane) {
+            let mut done: Vec<(usize, &Subagent)> = rec
+                .children
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| c.state.is_finished())
+                .collect();
+            done.sort_by(|a, b| b.1.since.cmp(&a.1.since));
+            out.extend(done);
+        }
+        out
+    }
+
+    /// Fold or unfold the finished subagents of the pane under the cursor.
+    pub fn toggle_expanded(&mut self) {
+        let Some(pane) = self.selected.as_ref().map(|s| s.pane.clone()) else {
+            return;
+        };
+        if !self.expanded.remove(&pane) {
+            self.expanded.insert(pane);
+        }
+        self.normalize();
     }
 
     fn shown_records(&self) -> Vec<usize> {
@@ -527,6 +560,17 @@ impl App {
         rec.location.clone().unwrap_or_else(|| "—".to_string())
     }
 
+    /// Width of the harness column: wide enough for the widest badge.
+    fn harness_width(&self) -> usize {
+        let w = self
+            .records
+            .iter()
+            .map(|r| badge_text(r).chars().count())
+            .max()
+            .unwrap_or(0);
+        w.max(W_HARNESS - 2) + 2
+    }
+
     /// Width of the location column: the widest one, capped so a long window
     /// name cannot eat the message.
     fn location_width(&self) -> usize {
@@ -677,30 +721,85 @@ fn counts_label(app: &App, members: &[usize]) -> String {
     parts.join(" ")
 }
 
-fn header_line(theme: &Theme, loc_w: usize, project_w: usize, msg_w: usize) -> Line<'static> {
+/// Counts of a pane's subagents: `(needs_input, working, finished)`.
+fn child_counts(rec: &PaneRecord) -> (usize, usize, usize) {
+    let mut n = (0, 0, 0);
+    for c in &rec.children {
+        match c.state {
+            State::NeedsInput => n.0 += 1,
+            State::Working | State::Starting => n.1 += 1,
+            // `idle` is not a state a subagent reaches; count it with the rest.
+            State::Done | State::Ended | State::Idle => n.2 += 1,
+        }
+    }
+    n
+}
+
+/// The harness cell as plain text: `claude ⚑1 ▶4 ✓48`, zero parts omitted.
+///
+/// Finished subagents are a count, not forty-eight rows. Only the two urgent
+/// parts are ever news; the rest is history, one keystroke away.
+pub fn badge_text(rec: &PaneRecord) -> String {
+    let (blocked, working, done) = child_counts(rec);
+    let mut out = rec.harness.as_str().to_string();
+    for (n, glyph) in [(blocked, "⚑"), (working, "▶"), (done, "✓")] {
+        if n > 0 {
+            out.push_str(&format!(" {glyph}{n}"));
+        }
+    }
+    out
+}
+
+/// [`badge_text`] as coloured spans, padded to `w`.
+fn badge_spans(t: &Theme, rec: &PaneRecord, w: usize) -> Vec<Span<'static>> {
+    let (blocked, working, done) = child_counts(rec);
+    let dim = Style::default().fg(t.dim);
+    let mut spans = vec![Span::styled(rec.harness.as_str().to_string(), dim)];
+    for (n, glyph, style) in [
+        (
+            blocked,
+            "⚑",
+            Style::default()
+                .fg(t.needs_input)
+                .add_modifier(Modifier::BOLD),
+        ),
+        (working, "▶", Style::default().fg(t.working)),
+        (done, "✓", dim.add_modifier(Modifier::DIM)),
+    ] {
+        if n > 0 {
+            spans.push(Span::styled(format!(" {glyph}{n}"), style));
+        }
+    }
+    let used = badge_text(rec).chars().count();
+    spans.push(Span::raw(" ".repeat(w.saturating_sub(used))));
+    spans
+}
+
+/// The computed column widths of one draw, passed around as a unit.
+#[derive(Debug, Clone, Copy)]
+struct Cols {
+    loc: usize,
+    project: usize,
+    harness: usize,
+    msg: usize,
+}
+
+fn header_line(theme: &Theme, c: Cols) -> Line<'static> {
     let dim = Style::default().fg(theme.dim).add_modifier(Modifier::DIM);
     let text = format!(
         "  {}{}{}{}{:>aw$} {}",
-        fit("location", loc_w),
-        fit("project", project_w),
-        fit("harness", W_HARNESS),
+        fit("location", c.loc),
+        fit("project", c.project),
+        fit("harness", c.harness),
         fit("state", W_STATE),
         "age",
-        fit("last message", msg_w),
+        fit("last message", c.msg),
         aw = W_AGE,
     );
     Line::from(Span::styled(text, dim))
 }
 
-fn pane_line(
-    app: &App,
-    i: usize,
-    selected: bool,
-    now: DateTime<Utc>,
-    loc_w: usize,
-    project_w: usize,
-    msg_w: usize,
-) -> Line<'static> {
+fn pane_line(app: &App, i: usize, selected: bool, now: DateTime<Utc>, c: Cols) -> Line<'static> {
     let rec = &app.records[i];
     let t = &app.theme;
     let marker = if selected { "▌ " } else { "  " };
@@ -709,12 +808,6 @@ fn pane_line(
         pick.add_modifier(Modifier::REVERSED)
     } else {
         pick
-    };
-    let kids = rec.children.len();
-    let harness = if kids > 0 {
-        format!("{} +{}", rec.harness.as_str(), kids)
-    } else {
-        rec.harness.as_str().to_string()
     };
     let state_txt = format!(
         "{} {}",
@@ -730,7 +823,7 @@ fn pane_line(
     );
     let mut spans = vec![
         Span::styled(marker.to_string(), Style::default().fg(t.accent)),
-        Span::styled(fit(&app.location_of(rec), loc_w), sel),
+        Span::styled(fit(&app.location_of(rec), c.loc), sel),
     ];
     // The pane id is the internal key, not something a user navigates by; it
     // is on screen only when they asked to debug.
@@ -740,11 +833,11 @@ fn pane_line(
             Style::default().fg(t.dim).add_modifier(Modifier::DIM),
         ));
     }
-    if project_w > 0 {
-        spans.push(Span::styled(fit(&project_of(rec), project_w), sel));
+    if c.project > 0 {
+        spans.push(Span::styled(fit(&project_of(rec), c.project), sel));
     }
+    spans.extend(badge_spans(t, rec, c.harness));
     spans.extend([
-        Span::styled(fit(&harness, W_HARNESS), Style::default().fg(t.dim)),
         Span::styled(fit(&state_txt, W_STATE), t.state_style(rec.state)),
         Span::styled(
             format!(
@@ -755,7 +848,7 @@ fn pane_line(
             Style::default().fg(t.dim),
         ),
         Span::styled(
-            one_line(rec.last_message.as_deref().unwrap_or(""), msg_w),
+            one_line(rec.last_message.as_deref().unwrap_or(""), c.msg),
             Style::default().fg(t.text),
         ),
     ]);
@@ -828,6 +921,7 @@ pub const HELP_SECTIONS: [(&str, &[(&str, &str)]); 3] = [
         "View",
         &[
             ("v", "grouped / flat"),
+            ("Space", "expand subagents"),
             ("e", "show ended"),
             ("r", "refresh"),
             ("?", "close"),
@@ -869,7 +963,7 @@ fn centered(area: ratatui::layout::Rect, w: u16, h: u16) -> ratatui::layout::Rec
 }
 
 /// Width of one help column, and of the key half inside it.
-const HELP_COL: usize = 26;
+const HELP_COL: usize = 30;
 const HELP_KEY: usize = 10;
 
 fn help_overlay(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
@@ -962,12 +1056,18 @@ pub fn render(f: &mut Frame, app: &App, now: DateTime<Utc>) {
     // Grouped rows sit under a `▸ project (branch)` header, so repeating the
     // project on every row says nothing; flat rows still need it.
     let project_w = if app.grouped { 0 } else { W_PROJECT };
-    let fixed = 2 + loc_w + project_w + W_HARNESS + W_STATE + W_AGE + 1;
-    let msg_w = inner_w.saturating_sub(fixed).max(1);
+    let harness_w = app.harness_width();
+    let fixed = 2 + loc_w + project_w + harness_w + W_STATE + W_AGE + 1;
+    let cols = Cols {
+        loc: loc_w,
+        project: project_w,
+        harness: harness_w,
+        msg: inner_w.saturating_sub(fixed).max(1),
+    };
 
     let rows = app.rows();
     let cursor_row = app.cursor_row(&rows);
-    let mut lines: Vec<Line> = vec![header_line(t, loc_w, project_w, msg_w)];
+    let mut lines: Vec<Line> = vec![header_line(t, cols)];
     if rows.is_empty() {
         lines.push(Line::from(Span::styled(
             "  no agents yet — start claude/codex/pi in a tmux pane",
@@ -984,15 +1084,15 @@ pub fn render(f: &mut Frame, app: &App, now: DateTime<Utc>) {
                 ),
                 Span::styled(counts_label(app, members), Style::default().fg(t.dim)),
             ]),
-            RowKind::Pane(i) => pane_line(app, *i, selected, now, loc_w, project_w, msg_w),
+            RowKind::Pane(i) => pane_line(app, *i, selected, now, cols),
             RowKind::Child(i, ci) => child_line(
                 app,
                 *i,
                 *ci,
                 selected,
                 now,
-                loc_w + project_w + W_HARNESS,
-                msg_w,
+                cols.loc + cols.project + cols.harness,
+                cols.msg,
             ),
             RowKind::EndedNote(k) => Line::from(Span::styled(
                 format!("  {k} ended, press e to show"),
@@ -1121,6 +1221,9 @@ impl Nav {
                     app.normalize();
                 }
             }
+            // A pane's finished subagents are folded into its badge; this is
+            // how you look at them.
+            KeyCode::Char(' ') | KeyCode::Tab => app.toggle_expanded(),
             KeyCode::Char('?') => app.show_help = true,
             // Anything else cancels a pending `g` (already taken above).
             _ => return false,

@@ -5,6 +5,10 @@ use crate::store;
 /// a moment after the run that produced it.
 const CHILD_TTL_SECS: i64 = 600;
 
+/// Hard cap on subagents kept per pane. A fan-out of fifty is a real thing
+/// Claude does; the record is an attention list, not a transcript of it.
+pub const MAX_CHILDREN: usize = 20;
+
 /// What applying an event asks the caller to do next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Applied {
@@ -81,9 +85,17 @@ pub fn apply_with(
         Event::SubagentStart { .. } | Event::SubagentStop { .. } => return Applied::default(),
     };
 
-    // A new turn, or the end of one, retires the subagents it spawned.
-    if matches!(parsed.event, Event::UserPromptSubmit | Event::Stop { .. }) {
-        rec.children.retain(|c| c.state != State::Done);
+    // A parent turn ending implies its subagents ended: nothing survives the
+    // turn that spawned it, whatever the harness forgot to send.
+    if matches!(parsed.event, Event::Stop { .. }) {
+        retire_children(rec, now);
+    }
+    // A pane that is idle has nothing outstanding, so its finished children
+    // have nothing left to say. `idle` is reached by a Stop you watched, by
+    // the seen reconciliation and by `perch seen`; all three end here or in
+    // `store`, and all three clear.
+    if next == State::Idle || matches!(parsed.event, Event::UserPromptSubmit) {
+        clear_finished_children(rec);
     }
     prune_children(rec, now);
 
@@ -103,6 +115,40 @@ fn sound_for(state: State) -> Option<&'static str> {
         State::Done => Some("done"),
         State::NeedsInput => Some("needs_input"),
         _ => None,
+    }
+}
+
+/// Mark every still-running subagent finished, leaving its message alone.
+///
+/// Called when the parent's turn ends: a subagent runs inside that turn, so it
+/// cannot outlive it. Without this a `SubagentStop` the harness never sent
+/// leaves a child claiming `working` for hours.
+pub fn retire_children(rec: &mut PaneRecord, now: &str) {
+    for c in &mut rec.children {
+        if c.state == State::Working || c.state == State::Starting {
+            c.state = State::Done;
+            c.since = now.to_string();
+        }
+    }
+}
+
+/// Drop every finished subagent. An `idle` pane keeps none.
+pub fn clear_finished_children(rec: &mut PaneRecord) {
+    rec.children.retain(|c| !c.state.is_finished());
+}
+
+/// Keep the child list under [`MAX_CHILDREN`], oldest finished first.
+///
+/// Ties are broken towards keeping what is still running: a working child is
+/// only dropped when every finished one is already gone.
+fn enforce_cap(rec: &mut PaneRecord) {
+    while rec.children.len() > MAX_CHILDREN {
+        let victim = rec
+            .children
+            .iter()
+            .position(|c| c.state.is_finished())
+            .unwrap_or(0);
+        rec.children.remove(victim);
     }
 }
 
@@ -143,13 +189,16 @@ fn apply_child(rec: &mut PaneRecord, agent_id: &str, parsed: &ParsedEvent, now: 
                 child.agent_type = agent_type;
             }
         }
-        None => rec.children.push(Subagent {
-            id: agent_id.to_string(),
-            agent_type,
-            state,
-            since: now.to_string(),
-            last_message: message,
-        }),
+        None => {
+            rec.children.push(Subagent {
+                id: agent_id.to_string(),
+                agent_type,
+                state,
+                since: now.to_string(),
+                last_message: message,
+            });
+            enforce_cap(rec);
+        }
     }
     Applied {
         parent_changed: false,
@@ -432,6 +481,137 @@ mod subagent_tests {
         );
         let ids: Vec<&str> = r.children.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(ids, ["fresh", "busy"]);
+    }
+
+    #[test]
+    fn a_parent_stop_retires_every_running_child() {
+        let mut r = PaneRecord::new("%1", Harness::Claude, "t0");
+        for id in ["a", "b"] {
+            apply(
+                &mut r,
+                &child(id, Event::SubagentStart { agent_type: None }),
+                &now(),
+            );
+        }
+        apply(
+            &mut r,
+            &child(
+                "blocked",
+                Event::NeedsInput {
+                    reason: "agent_needs_input".into(),
+                },
+            ),
+            &now(),
+        );
+        let t = now();
+        apply(&mut r, &top(Event::Stop { last_message: None }), &t);
+        assert_eq!(r.state, State::Done);
+        assert_eq!(r.children.len(), 3, "nothing is dropped, only retired");
+        assert!(
+            r.children
+                .iter()
+                .filter(|c| ["a", "b"].contains(&c.id.as_str()))
+                .all(|c| c.state == State::Done && c.since == t),
+            "{:?}",
+            r.children
+        );
+        // A child genuinely blocked on the human is not retired by the parent.
+        let blocked = r.children.iter().find(|c| c.id == "blocked").unwrap();
+        assert_eq!(blocked.state, State::NeedsInput);
+        assert_eq!(
+            blocked.last_message.as_deref(),
+            Some("agent_needs_input"),
+            "retiring never rewrites a message"
+        );
+    }
+
+    #[test]
+    fn reaching_idle_by_any_path_clears_finished_children() {
+        // A Stop you watched land: idle, and the children it retired go.
+        let mut r = PaneRecord::new("%1", Harness::Claude, "t0");
+        apply(
+            &mut r,
+            &child("a", Event::SubagentStart { agent_type: None }),
+            &now(),
+        );
+        apply_with(
+            &mut r,
+            &top(Event::Stop { last_message: None }),
+            &now(),
+            true,
+        );
+        assert_eq!(r.state, State::Idle);
+        assert!(r.children.is_empty(), "{:?}", r.children);
+
+        // `perch seen` and the seen reconciliation write `idle` directly; the
+        // store re-applies the same rule on every read.
+        let mut r = PaneRecord::new("%2", Harness::Claude, "t0");
+        apply(
+            &mut r,
+            &child("a", Event::SubagentStop { last_message: None }),
+            &now(),
+        );
+        apply(
+            &mut r,
+            &child("busy", Event::SubagentStart { agent_type: None }),
+            &now(),
+        );
+        r.state = State::Idle;
+        let out = store::reconcile(vec![r], &["%2".into()], chrono::Utc::now());
+        assert_eq!(out[0].children.len(), 1);
+        assert_eq!(out[0].children[0].id, "busy");
+    }
+
+    #[test]
+    fn children_are_capped_at_twenty_oldest_finished_first() {
+        let mut r = PaneRecord::new("%1", Harness::Claude, "t0");
+        // Two finished, then eighteen running: the list is exactly full.
+        for id in ["old-done", "newer-done"] {
+            apply(
+                &mut r,
+                &child(id, Event::SubagentStop { last_message: None }),
+                &now(),
+            );
+        }
+        for n in 0..18 {
+            apply(
+                &mut r,
+                &child(&format!("w{n}"), Event::SubagentStart { agent_type: None }),
+                &now(),
+            );
+        }
+        assert_eq!(r.children.len(), MAX_CHILDREN);
+
+        // The next one evicts the oldest finished child, not a running one.
+        apply(
+            &mut r,
+            &child("w18", Event::SubagentStart { agent_type: None }),
+            &now(),
+        );
+        let ids: Vec<&str> = r.children.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(r.children.len(), MAX_CHILDREN);
+        assert!(!ids.contains(&"old-done"), "{ids:?}");
+        assert!(ids.contains(&"newer-done"), "{ids:?}");
+
+        // With nothing finished left, the oldest running one goes.
+        apply(
+            &mut r,
+            &child("w19", Event::SubagentStart { agent_type: None }),
+            &now(),
+        );
+        apply(
+            &mut r,
+            &child("w20", Event::SubagentStart { agent_type: None }),
+            &now(),
+        );
+        let ids: Vec<&str> = r.children.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(r.children.len(), MAX_CHILDREN);
+        assert!(!ids.contains(&"newer-done"), "{ids:?}");
+        assert!(
+            !ids.contains(&"w0"),
+            "the oldest running one is next: {ids:?}"
+        );
+        assert!(ids.contains(&"w20"), "{ids:?}");
     }
 
     #[test]

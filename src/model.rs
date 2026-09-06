@@ -55,6 +55,11 @@ impl State {
         }
     }
 
+    /// `true` for the two terminal states a subagent can end in.
+    pub fn is_finished(self) -> bool {
+        matches!(self, State::Done | State::Ended)
+    }
+
     /// Sort rank for the TUI / `next`: needs_input, done, working, idle, ...
     pub fn rank(self) -> u8 {
         match self {

@@ -25,6 +25,17 @@ fn assert_pane_state(s: &Server, pane: &str, want: &str) {
     );
 }
 
+/// The subagents `perch list --json` reports for one pane.
+fn children_of(s: &Server, pane: &str) -> Vec<serde_json::Value> {
+    s.records()
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["pane"] == pane)
+        .map(|r| r["children"].as_array().cloned().unwrap_or_default())
+        .unwrap_or_default()
+}
+
 #[test]
 fn claude_hooks_drive_state_through_a_real_server() {
     if e2e::no_tmux() {
@@ -97,6 +108,42 @@ fn claude_hooks_drive_state_through_a_real_server() {
         .clone();
     assert_eq!(rec["children"].as_array().unwrap().len(), 1);
     assert_eq!(rec["project"], "perch");
+
+    // A fan-out of two, then the parent's turn ends: the parent stopping is
+    // the proof its subagents stopped, whatever SubagentStop the harness lost.
+    s.tmux(&["select-window", "-t", "one:1"]);
+    s.hook(&a, "claude", &f("user_prompt_submit.json"));
+    s.hook(&a, "claude", &f("subagent_start.json"));
+    s.hook(
+        &a,
+        "claude",
+        &f("subagent_start.json").replace("sub-7", "sub-8"),
+    );
+    let kids = children_of(&s, &a);
+    assert_eq!(kids.len(), 2, "{kids:?}");
+    assert!(kids.iter().all(|c| c["state"] == "working"), "{kids:?}");
+
+    s.hook(&a, "claude", &f("stop.json"));
+    assert_eq!(s.state_of(&a), "done");
+    let kids = children_of(&s, &a);
+    assert_eq!(kids.len(), 2, "{kids:?}");
+    assert!(
+        kids.iter().all(|c| c["state"] == "done"),
+        "a parent stop retires its children: {kids:?}"
+    );
+
+    // Look at the pane again: it is idle, and finished children have nothing
+    // left to say, so they are gone from the record.
+    s.tmux(&["select-window", "-t", "one:0"]);
+    assert!(wait_for(
+        || s.client_pane(&client.name) == a,
+        Duration::from_secs(2)
+    ));
+    assert!(wait_for(
+        || s.state_of(&a) == "idle" && children_of(&s, &a).is_empty(),
+        Duration::from_secs(3)
+    ));
+    assert!(children_of(&s, &a).is_empty(), "{:?}", children_of(&s, &a));
 
     s.hook(&a, "claude", &f("session_end.json"));
     assert_eq!(s.state_of(&a), "ended");

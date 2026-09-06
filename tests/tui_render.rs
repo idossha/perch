@@ -156,15 +156,15 @@ fn subagent_rows_render_and_enter_resolves_to_the_parent_pane() {
     ));
     app.records[0]
         .children
-        .push(kid("ff00ff00ff00", None, State::Done, "found it"));
+        .push(kid("ff00ff00ff00", None, State::NeedsInput, "approve?"));
     app.records[0]
         .children
-        .push(kid("deaddead", None, State::Ended, "gone"));
+        .push(kid("deaddead", None, State::Done, "found it"));
     let out = lines(&app).join("\n");
     assert!(out.contains("└ Explore"), "{out}");
     assert!(out.contains("└ ff00ff00"), "{out}"); // id[:8] when no agent_type
-    assert!(!out.contains("└ deaddead"), "ended child shown:\n{out}");
-    assert!(out.contains("claude +3"), "no child badge:\n{out}");
+    assert!(!out.contains("└ deaddead"), "finished child shown:\n{out}");
+    assert!(out.contains("claude ⚑1 ▶1 ✓1"), "no badge:\n{out}");
 
     // The cursor on a child resolves to the parent's pane.
     let rows = app.rows();
@@ -175,6 +175,85 @@ fn subagent_rows_render_and_enter_resolves_to_the_parent_pane() {
     app.selected = app.selection_at(&rows[child_row]);
     assert_eq!(app.current().unwrap().pane, "%2");
     assert_eq!(app.jump_target().as_deref(), Some("%2"));
+}
+
+/// The screenshot that started this: forty-eight finished subagents under one
+/// pane. They are a count, not forty-eight rows.
+#[test]
+fn finished_subagents_fold_into_the_badge_and_space_unfolds_them() {
+    let mut app = board();
+    for n in 0..48 {
+        app.records[0].children.push(kid(
+            &format!("d{n}"),
+            Some(&format!("Finder{n}")),
+            State::Done,
+            "ok",
+        ));
+    }
+    app.records[0]
+        .children
+        .push(kid("live", Some("Explore"), State::Working, "reading"));
+
+    let out = lines(&app).join("\n");
+    assert!(out.contains("claude ▶1 ✓48"), "badge:\n{out}");
+    assert!(
+        out.contains("└ Explore"),
+        "the running child is always shown"
+    );
+    assert!(
+        !out.contains("└ Finder0"),
+        "a finished child is folded:\n{out}"
+    );
+    assert_eq!(
+        app.rows()
+            .iter()
+            .filter(|r| matches!(r, RowKind::Child(_, _)))
+            .count(),
+        1
+    );
+
+    // Space on the parent row unfolds them, most recent first.
+    app.selected = Some(Selection {
+        pane: "%2".into(),
+        child: None,
+    });
+    let mut nav = Nav::new();
+    assert!(nav.key(&mut app, KeyCode::Char(' '), Instant::now()));
+    assert_eq!(
+        app.rows()
+            .iter()
+            .filter(|r| matches!(r, RowKind::Child(_, _)))
+            .count(),
+        49
+    );
+    assert!(
+        lines(&app).join("\n").contains("└ Finder47"),
+        "unfolded rows"
+    );
+
+    // And Tab folds them again.
+    assert!(nav.key(&mut app, KeyCode::Tab, Instant::now()));
+    assert!(!lines(&app).join("\n").contains("└ Finder47"));
+}
+
+/// A blocked subagent is the one thing on the board that is waiting on you.
+#[test]
+fn a_needs_input_child_is_never_folded_away() {
+    let mut app = board();
+    for n in 0..20 {
+        app.records[0]
+            .children
+            .push(kid(&format!("d{n}"), None, State::Done, "ok"));
+    }
+    app.records[0].children.push(kid(
+        "blocked",
+        Some("Reviewer"),
+        State::NeedsInput,
+        "approve?",
+    ));
+    let out = lines(&app).join("\n");
+    assert!(out.contains("└ Reviewer"), "{out}");
+    assert!(out.contains("claude ⚑1 ✓20"), "{out}");
 }
 
 #[test]
@@ -402,6 +481,7 @@ fn the_help_overlay_shows_every_key_and_the_state_legend() {
         "grouped / flat",
         "v",
         "show ended",
+        "expand subagents",
         "refresh",
         "dismiss done",
         "mute",

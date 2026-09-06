@@ -122,15 +122,17 @@ pub fn snapshot_with_live(tmux: &dyn Tmux) -> (Vec<PaneRecord>, Vec<LivePane>) {
             *rec = fresh;
         }
     }
-    let states_before: Vec<(String, State)> =
-        before.iter().map(|r| (r.pane.clone(), r.state)).collect();
+    let states_before: Vec<(String, State, usize)> = before
+        .iter()
+        .map(|r| (r.pane.clone(), r.state, r.children.len()))
+        .collect();
     let after = reconcile(before, &live, Utc::now());
 
     // Persist the reconciliation: dead panes flip to `ended`, stale ones go away.
-    for (pane, state) in &states_before {
+    for (pane, state, kids) in &states_before {
         match after.iter().find(|r| &r.pane == pane) {
             None => remove(pane),
-            Some(rec) if rec.state != *state => {
+            Some(rec) if rec.state != *state || rec.children.len() != *kids => {
                 let _ = save(rec);
             }
             Some(_) => {}
@@ -162,6 +164,9 @@ pub fn mark_seen(t: &dyn Tmux, records: &[PaneRecord]) -> usize {
         let mut rec = rec.clone();
         rec.state = State::Idle;
         rec.since = now.clone();
+        // Seen is one of the ways a pane reaches `idle`, and an idle pane
+        // keeps no finished subagents.
+        crate::reducer::clear_finished_children(&mut rec);
         if save(&rec).is_err() {
             continue;
         }
@@ -190,6 +195,11 @@ pub fn reconcile(
 ) -> Vec<PaneRecord> {
     let mut out = Vec::new();
     for mut rec in records {
+        // The invariant, wherever `idle` came from — including `perch seen`,
+        // which writes the state without going through the reducer.
+        if rec.state == State::Idle {
+            crate::reducer::clear_finished_children(&mut rec);
+        }
         if !live_ids.iter().any(|p| p == &rec.pane) {
             if rec.state != State::Ended {
                 rec.state = State::Ended;
