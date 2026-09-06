@@ -1,15 +1,15 @@
 ┌perch─────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│  location  harness       state          age last message                                                             │
+│  location   harness       state          age last message                                                            │
 │▸ luna (main)  ⚑1 ✓1                                                                                                  │
-│  luna      %1 claude ⚑1     ⚑ needs_input  45s permission_prompt                                                     │
-│  └ Explore               ⚑ needs_input  20s write to src/main.rs?                                                    │
-│  review    %2 claude        ✓ done          5m wrote the reducer and its tests                                       │
+│  luna %1    claude ⚑1     ⚑ needs_input  45s permission_prompt                                                       │
+│  └ Explore                ⚑ needs_input  20s write to src/main.rs?                                                   │
+│  review %2  claude        ✓ done          5m wrote the reducer and its tests                                         │
 │▸ duet  ▶1                                                                                                            │
-│  duet      %5 claude ▶1 ✓2  ▶ delegating    2m handed off to 2 agents                                                │
-│  └ Explore               ▶ working       1m reading tests                                                            │
+│  duet %5    claude ▶1 ✓2  ▶ delegating    2m handed off to 2 agents                                                  │
+│  └ Explore                ▶ working       1m reading tests                                                           │
 │▸ perch  ▶1 ·1                                                                                                        │
-│  perch     %3 claude        ▶ working      12s editing src/tui.rs                                                    │
-│  docs      %4 claude        · idle         30m                                                                       │
+│  perch %3   claude        ▶ working      12s editing src/tui.rs                                                      │
+│  docs %4    claude        · idle         30m                                                                         │
 │  1 ended, press e to show                                                                                            │
 │                                                                                                                      │
 │                                                                                                                      │

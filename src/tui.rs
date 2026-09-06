@@ -593,7 +593,14 @@ impl App {
         let w = self
             .records
             .iter()
-            .map(|r| self.location_of(r).chars().count())
+            .map(|r| {
+                let id = if self.debug {
+                    r.pane.chars().count() + 1
+                } else {
+                    0
+                };
+                self.location_of(r).chars().count() + id
+            })
             .max()
             .unwrap_or(0);
         w.clamp(W_LOC_MIN, W_LOC_MAX) + 2
@@ -831,18 +838,18 @@ fn pane_line(app: &App, i: usize, selected: bool, now: DateTime<Utc>, c: Cols) -
         state_glyph(shown, if shown == State::Working { app.tick } else { 0 }),
         state_word(rec)
     );
+    // The pane id is the internal key, not something a user navigates by; it
+    // is on screen only when they asked to debug, and then inside the
+    // location cell so the columns to its right do not move.
+    let location = if app.debug {
+        format!("{} {}", app.location_of(rec), rec.pane)
+    } else {
+        app.location_of(rec)
+    };
     let mut spans = vec![
         Span::styled(marker.to_string(), Style::default().fg(t.accent)),
-        Span::styled(fit(&app.location_of(rec), c.loc), sel),
+        Span::styled(fit(&location, c.loc), sel),
     ];
-    // The pane id is the internal key, not something a user navigates by; it
-    // is on screen only when they asked to debug.
-    if app.debug {
-        spans.push(Span::styled(
-            format!("{} ", rec.pane),
-            Style::default().fg(t.dim).add_modifier(Modifier::DIM),
-        ));
-    }
     if c.project > 0 {
         spans.push(Span::styled(fit(&project_of(rec), c.project), sel));
     }
