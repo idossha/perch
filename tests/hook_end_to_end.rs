@@ -585,3 +585,103 @@ fn install_tmux_writes_the_popup_binding_and_prints_the_source_line() {
         "set -g mouse on\n"
     );
 }
+
+/// `perch seen` with no argument reconciles the whole board: it is what the
+/// tmux hooks call, so it must not care which pane the hook named.
+///
+/// It flips only `done` records a focused client is showing, and it leaves a
+/// pane the user is not looking at alone.
+#[test]
+fn argument_less_seen_reconciles_every_done_pane_a_focused_client_shows() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path();
+    let seed = |pane: &str, state: &str| {
+        let key: String = pane
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect();
+        std::fs::create_dir_all(p.join("panes")).unwrap();
+        let body = serde_json::json!({
+            "pane": pane,
+            "harness": "claude",
+            "state": state,
+            "since": "2026-01-01T00:00:00Z",
+            "children": [],
+        });
+        std::fs::write(
+            p.join("panes").join(format!("{key}.json")),
+            serde_json::to_vec_pretty(&body).unwrap(),
+        )
+        .unwrap();
+        key
+    };
+    let k1 = seed("%101", "done"); // shown by the focused client
+    let k2 = seed("%102", "done"); // on nobody's screen
+    let k3 = seed("%103", "working"); // shown, but not finished
+    let state = |key: &str| {
+        let body = std::fs::read_to_string(p.join("panes").join(format!("{key}.json"))).unwrap();
+        serde_json::from_str::<serde_json::Value>(&body).unwrap()["state"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+
+    let out = Command::new(env!("CARGO_BIN_EXE_perch"))
+        .arg("seen")
+        .env("PERCH_STATE_DIR", p)
+        .env("PERCH_CONFIG_DIR", p.join("config"))
+        .env("PERCH_NO_SOUND", "1")
+        .env("PERCH_NO_TMUX", "1")
+        .env("PERCH_FAKE_VIEWERS", "%101:focused,%103:focused")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+
+    assert_eq!(state(&k1), "idle", "a done pane you are looking at is seen");
+    assert_eq!(state(&k2), "done", "a pane on nobody's screen is untouched");
+    assert_eq!(state(&k3), "working", "seen only ever moves done");
+}
+
+/// When no client on the server reports focus, the flag carries no
+/// information and any client showing the pane counts — otherwise every pane
+/// on a terminal without focus reporting would read unseen forever.
+#[test]
+fn with_no_focus_information_any_viewer_counts_as_seen() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path();
+    let hook = |viewers: &str, body: &str| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_perch"));
+        cmd.args(["hook", "claude"])
+            .env("PERCH_STATE_DIR", p)
+            .env("PERCH_CONFIG_DIR", p.join("config"))
+            .env("PERCH_NO_SOUND", "1")
+            .env("PERCH_NO_TMUX", "1")
+            .env("PERCH_FAKE_VIEWERS", viewers)
+            .env("TMUX_PANE", "%999")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut child = cmd.spawn().unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(body.as_bytes())
+            .unwrap();
+        assert!(child.wait().unwrap().success());
+        let raw = std::fs::read_to_string(p.join("panes/_999.json")).unwrap();
+        serde_json::from_str::<serde_json::Value>(&raw).unwrap()["state"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+
+    // No client anywhere carries `focused`: showing the pane is enough.
+    hook("%999", &fixture("user_prompt_submit.json"));
+    assert_eq!(hook("%999", &fixture("stop.json")), "idle");
+
+    // Another client *does* report focus, on another pane: now the flag means
+    // something, and this pane is not seen.
+    hook("%999,%1:focused", &fixture("user_prompt_submit.json"));
+    assert_eq!(hook("%999,%1:focused", &fixture("stop.json")), "done");
+}

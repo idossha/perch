@@ -126,6 +126,16 @@ fn a_send_message_pre_tool_use_is_a_resume() {
             id: "a41eb56e05dc8146f".into()
         }
     );
+    // A teammate or a session is named, not identified: `to: main` is kept
+    // verbatim and becomes a child of that name (decision 17).
+    raw["tool_input"]["to"] = serde_json::json!("main");
+    assert_eq!(
+        adapters::parse(Harness::Claude, &raw)
+            .unwrap()
+            .unwrap()
+            .event,
+        Event::SubagentResume { id: "main".into() }
+    );
     raw["tool_input"]["to"] = serde_json::json!("");
     assert_eq!(
         adapters::parse(Harness::Claude, &raw)

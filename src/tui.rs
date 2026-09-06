@@ -1045,6 +1045,28 @@ fn help_overlay(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     );
 }
 
+/// Render `app` offscreen into plain text: one line per terminal row, with
+/// trailing spaces stripped.
+///
+/// This is what the golden snapshots compare, so the dashboard's layout is
+/// asserted as a whole picture rather than as a bag of `contains`. `now` is
+/// passed in, so the age column is a fixed function of the fixture.
+pub fn render_to_string(app: &App, w: u16, h: u16, now: DateTime<Utc>) -> String {
+    let mut term = Terminal::new(ratatui::backend::TestBackend::new(w, h))
+        .expect("TestBackend never fails to build");
+    term.draw(|f| render(f, app, now)).expect("offscreen draw");
+    let buf = term.backend().buffer().clone();
+    let mut out = String::new();
+    for y in 0..buf.area.height {
+        let line: String = (0..buf.area.width)
+            .map(|x| buf[(x, y)].symbol().to_string())
+            .collect();
+        out.push_str(line.trim_end());
+        out.push('\n');
+    }
+    out
+}
+
 pub fn render(f: &mut Frame, app: &App, now: DateTime<Utc>) {
     let banner = u16::from(!app.unwired.is_empty());
     let err = u16::from(app.error.is_some());

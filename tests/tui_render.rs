@@ -4,7 +4,7 @@ use chrono::{Duration, Utc};
 use crossterm::event::KeyCode;
 use perch::model::{Harness, PaneRecord, State, Subagent};
 use perch::tmux::LivePane;
-use perch::tui::{render, App, Nav, RowKind, Selection, LIGHT};
+use perch::tui::{render, render_to_string, App, Nav, RowKind, Selection, LIGHT};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 use std::time::Instant;
@@ -743,4 +743,108 @@ fn the_location_column_is_adaptive_and_capped() {
     let out = lines(&app).join("\n");
     assert!(out.contains("hello there"), "message lost:\n{out}");
     assert!(out.contains('…'), "location not ellipsized:\n{out}");
+}
+
+/// A pane tmux no longer knows about, with nothing stored either, says so
+/// rather than inventing a location or printing its `%id`.
+#[test]
+fn a_pane_with_no_location_at_all_renders_an_em_dash() {
+    let mut app = App::with_records(vec![rec("%9", "perch", State::Done, 5, "finished")]);
+    app.live = Vec::new();
+    app.normalize();
+    let out = lines(&app);
+    let row = out
+        .iter()
+        .find(|l| l.contains("finished"))
+        .expect("the done row");
+    assert!(row.contains('—'), "no fallback location:\n{row}");
+    assert!(!row.contains("%9"), "a pane id reached the row:\n{row}");
+}
+
+/// Window names are whatever the user typed: spaces, accents, CJK. None of it
+/// may panic or bleed into the message column.
+#[test]
+fn a_unicode_window_name_with_spaces_renders() {
+    let mut app = App::with_records(vec![rec("%1", "perch", State::Working, 3, "still going")]);
+    app.live = vec![live("%1", "main", "計画 my notes", 0, 1)];
+    app.normalize();
+    let out = lines(&app).join("\n");
+    // A double-width glyph occupies two cells, so the reconstructed line has
+    // a filler between them: what matters is that the name is there, intact
+    // and on one row, and that it did not eat the message.
+    assert!(out.contains('計') && out.contains('画'), "{out}");
+    assert!(out.contains("my notes"), "{out}");
+    assert!(out.contains("still going"), "{out}");
+}
+
+/// A message the harness sent with newlines, tabs and an ANSI escape is one
+/// flat line: a raw escape reaching the buffer would repaint the board.
+#[test]
+fn control_characters_in_a_message_are_flattened() {
+    let mut app = App::with_records(vec![rec(
+        "%1",
+        "perch",
+        State::Done,
+        5,
+        "first line\n\u{1b}[31msecond\tline\u{1b}[0m",
+    )]);
+    app.live = vec![live("%1", "main", "w1", 0, 1)];
+    app.normalize();
+    let out = lines(&app);
+    let body: Vec<&String> = out.iter().filter(|l| l.contains("first line")).collect();
+    assert_eq!(body.len(), 1, "the message spilled onto two rows:\n{out:?}");
+    let joined = out.join("\n");
+    assert!(!joined.contains('\u{1b}'), "an escape reached the screen");
+    assert!(!joined.contains("second"), "only the first line is shown");
+}
+
+/// A project name longer than its column is cut, not wrapped, and the row
+/// keeps its shape.
+#[test]
+fn a_very_long_project_name_is_truncated() {
+    let mut app = App::with_records(vec![rec(
+        "%1",
+        &"deep-nested-monorepo-package".repeat(4),
+        State::Working,
+        3,
+        "hello there",
+    )]);
+    app.live = vec![live("%1", "main", "w1", 0, 1)];
+    app.grouped = false;
+    app.normalize();
+    let out = lines(&app);
+    for l in &out {
+        assert!(
+            l.chars().count() <= 110,
+            "row overflowed the terminal:\n{l}"
+        );
+    }
+    assert!(out.join("\n").contains('…'), "{out:?}");
+}
+
+/// Narrow terminals: the board is squeezed, never panics, and never wraps a
+/// row onto a second line.
+#[test]
+fn narrow_terminals_truncate_instead_of_panicking() {
+    for width in [80u16, 40] {
+        let mut app = board();
+        app.show_ended = true;
+        app.error = Some("pane %9 is gone".into());
+        let text = render_to_string(&app, width, 24, Utc::now());
+        for l in text.lines() {
+            assert!(
+                l.chars().count() <= width as usize,
+                "a line ran past {width} columns:\n{l}"
+            );
+        }
+        assert_eq!(text.lines().count(), 24, "{width}x24 must fill the screen");
+        assert!(
+            text.contains("perch"),
+            "no board at {width} columns:\n{text}"
+        );
+        // The help overlay is drawn into the same narrow frame.
+        app.show_help = true;
+        let help = render_to_string(&app, width, 24, Utc::now());
+        assert!(help.contains("help"), "{help}");
+    }
 }

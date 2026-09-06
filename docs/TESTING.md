@@ -141,3 +141,146 @@ before `cargo test`:
 Ubuntu half is the one that matters.) Note that the workflow sets
 `PERCH_NO_TMUX: "1"` at the top level for the unit suite — the harness strips it
 from every perch child, so no change is needed there.
+
+## Coverage: every documented rule and the test that would fail without it
+
+The rules are the ones stated in `docs/ARCHITECTURE.md` and `docs/DECISIONS.md`
+(entries 8–17). Each row names tests that fail if the rule is removed — not
+tests that merely execute the code.
+
+### The reducer's event → state table
+
+| rule | test(s) |
+| --- | --- |
+| `SessionStart` → `idle` | `reducer::session_start_goes_idle` |
+| `UserPromptSubmit` → `working` | `reducer::prompt_then_stop` |
+| `Stop` → `idle` when the pane is seen, `done` when it is not | `reducer::stop_is_done_when_you_are_elsewhere_and_idle_when_you_are_looking`, `hook_end_to_end::done_means_finished_while_you_were_elsewhere`, `e2e_seen::seen_is_evaluated_from_the_live_client_list` |
+| `Stop` records `last_assistant_message`, whitespace-collapsed | `reducer::prompt_then_stop`, `hook_end_to_end::a_prompt_then_stop_leaves_a_done_record` |
+| `NeedsInput` only for real dialogs (`permission_prompt`, elicitations, `agent_needs_input`, codex `PermissionRequest`) | `adapter_claude::needs_input_notifications`, `adapter_codex::permission_request_is_needs_input` |
+| `idle_prompt` / `auth_success` / `quota_*` are observed only | `adapter_claude::idle_and_informational_notifications_are_only_observed`, `reducer::an_idle_prompt_or_quota_notice_changes_nothing`, `reducer_rules::no_other_transition_makes_a_sound` |
+| `agent_completed` → `done` | `adapter_claude::agent_completed_is_done`, `reducer::needs_input_and_completed` |
+| `ToolUse` clears `needs_input` and nothing else | `reducer::a_tool_call_clears_a_stale_needs_input_and_nothing_else`, `hook_end_to_end::a_tool_call_unblocks_a_stale_needs_input` |
+| A new prompt also clears `needs_input` | `reducer::a_new_prompt_also_clears_needs_input` |
+| `SessionEnd` → `ended` | `reducer::session_end_ends`, `adapter_claude::session_end` |
+| `since` moves only on a real change | `reducer::unchanged_state_keeps_since`, `reducer_rules::an_unchanged_state_chimes_nothing` |
+| `project` is the last component of `cwd` | `reducer::cwd_sets_project`, `tui_render::project_falls_back_to_the_cwd_basename_then_a_stub` |
+| `last_message` capped on a char boundary | `reducer::truncate_is_char_safe` |
+| State rank orders `needs_input < done < working < starting < idle < ended` | `reducer::ranks_order_needs_input_first`, `store_roundtrip::reconcile_uses_the_injected_pane_list` |
+| An unparseable or untracked payload is a no-op, exit 0 | `adapter_*::untracked_events_are_dropped`, `hook_end_to_end::malformed_and_untracked_payloads_still_exit_zero` |
+
+### Seen
+
+| rule | test(s) |
+| --- | --- |
+| A pane is seen when a *focused* client is showing it | `tmux::a_pane_is_seen_when_a_focused_client_is_showing_it`, `store_roundtrip::snapshot_marks_done_panes_a_focused_client_is_showing_as_idle` |
+| With no focus information anywhere, any viewer counts | `tmux::a_pane_is_seen_when_a_focused_client_is_showing_it`, `hook_end_to_end::with_no_focus_information_any_viewer_counts_as_seen` |
+| The reconciliation flips `done` → `idle` only, and writes it through | `store_roundtrip::snapshot_marks_done_panes_a_focused_client_is_showing_as_idle`, `e2e_seen::seen_is_evaluated_from_the_live_client_list` |
+| `since` resets on that flip | `store_roundtrip::snapshot_marks_done_panes_a_focused_client_is_showing_as_idle` |
+| `perch seen` with no argument reconciles every `done` record | `hook_end_to_end::argument_less_seen_reconciles_every_done_pane_a_focused_client_shows`, `e2e_seen::the_tmux_hooks_make_seen_immediate` |
+| `perch seen <pane>` marks one pane unconditionally, and is a no-op on a pane that is not `done` | `hook_end_to_end::done_means_finished_while_you_were_elsewhere`, `e2e_navigation::enter_moves_the_client_to_the_selected_pane_and_marks_it_seen` |
+| The installed tmux hooks make it immediate | `e2e_seen::the_tmux_hooks_make_seen_immediate` |
+
+### Subagents
+
+| rule | test(s) |
+| --- | --- |
+| A fresh `SubagentStart` upserts a working child with its `agent_type` | `reducer::start_then_stop_tracks_one_child`, `adapter_claude::subagent_events_carry_the_agent_id` |
+| A `SendMessage` `PreToolUse` is a resume; the ` [ref]` suffix is dropped, a name (`main`) is kept verbatim, an empty target is not a resume | `adapter_claude::a_send_message_pre_tool_use_is_a_resume` |
+| A resume restarts the clock, keeping `agent_type` and message | `reducer::a_resume_of_a_finished_child_puts_it_back_to_work`, `reducer::a_resume_of_an_unknown_id_creates_a_working_child` |
+| A resumed child keeps the pane delegating until its stop | `reducer::a_resumed_child_keeps_the_pane_delegating_until_its_stop` |
+| A helper stop — unknown id, empty `agent_type` — is dropped | `reducer::a_helper_stop_for_an_unknown_id_is_ignored`, `adapter_claude::a_helper_stop_has_no_agent_type` |
+| A stop for a known id, or an unknown id with an `agent_type`, records a finished child | `reducer::start_then_stop_tracks_one_child` |
+| `effective_state` is `working` (**delegating**) for a done/idle pane with running children | `store_roundtrip::reconcile_keeps_running_children_of_an_idle_or_done_pane`, `tui_render::a_delegating_pane_reads_and_sorts_as_working_and_is_never_next` |
+| Delegating drives the state cell, the sort, `next`, and `@perch_state` | `tui_render::a_delegating_pane_reads_and_sorts_as_working_and_is_never_next`, `hook_end_to_end::a_stop_with_running_subagents_asks_for_no_card_and_reads_as_working`, `golden::grouped_board_120x24` |
+| No chime and no card while delegating | `reducer::a_parent_stop_leaves_running_children_alone_and_stays_silent`, `hook_end_to_end::a_stop_with_running_subagents_asks_for_no_card_and_reads_as_working` |
+| The chime comes on the parent's next `Stop`, after the last child | `hook_end_to_end::a_stop_with_running_subagents_asks_for_no_card_and_reads_as_working` |
+| A `needs_input` child chimes, whatever the others are doing, and is never folded away | `reducer::a_notification_blocks_the_child_and_sounds`, `reducer::a_parent_needs_input_still_chimes_while_delegating`, `tui_render::a_needs_input_child_is_never_folded_away` |
+| A pane reaching `idle` (any path) clears its finished children | `reducer::reaching_idle_by_any_path_clears_finished_children`, `reducer::a_new_turn_clears_done_children_but_keeps_running_ones`, `store_roundtrip::reconcile_keeps_running_children_of_an_idle_or_done_pane` |
+| At most twenty children, oldest finished dropped first | `reducer::children_are_capped_at_twenty_oldest_finished_first` |
+| Finished children expire after ten minutes | `reducer::finished_children_are_pruned_after_ten_minutes` |
+| A child running for over two hours is retired | `reducer::a_child_running_for_two_hours_is_retired`, `store_roundtrip::reconcile_keeps_running_children_of_an_idle_or_done_pane` |
+| `SessionEnd` retires running children | `reducer::session_end_retires_every_running_child` |
+| An `ended` pane runs nothing | `store_roundtrip::reconcile_keeps_running_children_of_an_idle_or_done_pane` |
+| Subagent events never move the parent | `hook_end_to_end::subagent_events_become_children_of_the_parent_pane`, `hook_end_to_end::codex_subagents_do_not_move_the_parent` |
+
+### Sound
+
+| rule | test(s) |
+| --- | --- |
+| `done` and `needs_input` chime; nothing else does | `reducer_rules::a_stop_you_did_not_watch_chimes_done_and_one_you_watched_is_silent`, `reducer_rules::a_needs_input_chimes_its_own_sound`, `reducer_rules::a_completed_notification_chimes_done`, `reducer_rules::no_other_transition_makes_a_sound` |
+| Per-pane cooldown | `sound_cue::a_second_chime_inside_the_cooldown_is_suppressed` |
+| The mute file silences everything | `sound_cue::the_mute_file_silences_the_hook` |
+| `PERCH_NO_SOUND=1` silences everything | `sound_cue::perch_no_sound_silences_the_hook` |
+| `done` / `needs_input` / `error` are the configurable keys | `sound_cue::only_done_needs_input_and_error_have_a_sound`, `sound::named_sound_resolves_under_system_sounds` |
+
+### Store and liveness
+
+| rule | test(s) |
+| --- | --- |
+| Records are written tmp-then-rename, leaving no temp file | `store_roundtrip::save_is_atomic_and_leaves_no_temp_files`, `store_roundtrip::save_load_round_trip` |
+| `events.jsonl` is append-only | `store_roundtrip::events_are_appended_as_jsonl` |
+| A record whose pane is gone becomes `ended`; one `ended` over an hour is deleted | `store_roundtrip::reconcile_uses_the_injected_pane_list`, `store_roundtrip::snapshot_persists_the_reconciliation` |
+| The reconciliation is persisted, not merely reported | `store_roundtrip::snapshot_persists_the_reconciliation` |
+| An unknown-field or missing-field record still loads | `store_roundtrip::save_load_round_trip` |
+| Ages format as s/m/h | `store_roundtrip::age_formatting_and_parsing`, `store::fmt_age_units` |
+| A location perch cannot resolve falls back to the stored one, then `—` | `tui_render::an_ended_pane_shows_its_last_known_location`, `tui_render::a_pane_with_no_location_at_all_renders_an_em_dash` |
+
+### Navigation
+
+| rule | test(s) |
+| --- | --- |
+| Every move is one `switch-client -c <client> -t <pane>` | `tmux::the_only_jump_primitive_is_switch_client_with_an_explicit_client`, `tui_render::enter_switches_the_named_client_to_the_pane_id`, `e2e_navigation::enter_moves_the_client_to_the_selected_pane_and_marks_it_seen` |
+| The client is always explicit; a missing `--client` warns and guesses | `tmux::an_explicit_client_wins_without_asking_tmux` |
+| A jump to a gone pane shows `pane %N is gone` and does not exit | `tmux::a_failed_jump_is_reported`, `tui_render::a_gone_pane_renders_an_error_line`, `e2e_navigation::a_pane_that_died_before_enter_is_reported_gone_and_moves_nobody`, `golden::a_gone_pane_error_line_120x24` |
+| The pane is confirmed present before the jump | `tmux::pane_existence_comes_from_the_live_list` |
+| Selection is keyed by pane, and survives a reordering refresh | `tui_render::the_selection_survives_a_reordering_refresh`, `tui_render::a_vanished_pane_moves_the_cursor_to_the_nearest_row` |
+| A child row resolves to its parent pane | `tui_render::subagent_rows_render_and_enter_resolves_to_the_parent_pane` |
+| `next` is the oldest `needs_input`, else the oldest `done`, by `since`; delegating panes are skipped | `tui_render::next_waiting_is_the_oldest_needs_input_then_the_oldest_done`, `tui_render::a_delegating_pane_reads_and_sorts_as_working_and_is_never_next`, `e2e_navigation::next_lands_on_the_oldest_waiting_pane_across_sessions` |
+| `gg` / `G` / `v` / `e` / `Space`, and a lone `g` does nothing | `tui_render::gg_and_shift_g_go_to_the_ends`, `tui_render::gg_goes_to_the_top_and_a_lone_g_does_nothing`, `tui_render::v_toggles_grouped_and_flat`, `tui_render::ended_rows_are_hidden_until_e`, `tui_render::finished_subagents_fold_into_the_badge_and_space_unfolds_them`, `golden::flat_board_120x24`, `golden::ended_rows_appear_with_e`, `golden::finished_children_unfold_with_space` |
+| The cursor skips headers and notes | `tui_render::navigation_skips_headers_and_notes` |
+
+### Location column
+
+| rule | test(s) |
+| --- | --- |
+| Rows show the window name, never a pane id | `tui_render::rows_show_the_window_name_and_never_a_pane_id`, `e2e_tui_render::the_tui_renders_the_seeded_rows_in_a_real_pane` |
+| `<session>/` only when the live panes span more than one session | `tui_render::the_session_prefix_appears_only_with_more_than_one_session`, `tmux::a_location_names_the_window_and_only_disambiguates_when_it_must` |
+| `.<pane_index>` only when the window is split | `tui_render::the_pane_index_appears_only_in_a_split_window` |
+| A window name may contain spaces and non-ASCII | `tmux::a_window_name_may_contain_spaces`, `tui_render::a_unicode_window_name_with_spaces_renders` |
+| The column is adaptive and capped, with an ellipsis | `tui_render::the_location_column_is_adaptive_and_capped` |
+| Grouped rows drop the project column; the header carries project and branch | `tui_render::grouped_rows_drop_the_project_column`, `tui_render::a_group_header_carries_the_branch_when_the_group_agrees`, `golden::grouped_board_120x24`, `golden::flat_board_120x24` |
+| `PERCH_DEBUG=1` shows the pane id | `tui_render::perch_debug_appends_the_pane_id`, `golden::perch_debug_shows_pane_ids_120x24` |
+
+### Installers, trust and doctor
+
+| rule | test(s) |
+| --- | --- |
+| Claude merge appends, preserves and is idempotent, with a backup | `install::merge_appends_and_preserves_existing`, `install::merge_is_idempotent`, `hook_end_to_end::install_claude_writes_a_backup_and_is_idempotent`, `hook_end_to_end::install_claude_dry_run_writes_nothing_and_merges_correctly` |
+| Only `SessionStart` carries a matcher | `install::only_session_start_gets_a_matcher` |
+| Codex merge preserves every existing entry in order, backs up once, is idempotent | `install_codex_pi::codex_merge_preserves_every_existing_entry_in_order`, `install_codex_pi::codex_install_backs_up_once_and_is_idempotent`, `install_codex_pi::codex_install_creates_the_file_when_there_is_none` |
+| pi extension is written, replaced after a backup, idempotent | `install_codex_pi::pi_install_writes_the_extension_and_is_idempotent`, `install_codex_pi::pi_install_replaces_a_stale_copy_after_backing_it_up`, `adapter_pi::the_embedded_extension_spawns_the_pi_hook` |
+| `--dry-run` / `--print` write nothing | `install_codex_pi::codex_dry_run_and_print_write_nothing`, `install_codex_pi::pi_dry_run_and_print_write_nothing`, `setup_lifecycle::setup_dry_run_writes_nothing` |
+| Codex trust hashes match codex's own recipe, matcher-sensitive | `trust::hashes_match_codex`, `trust::a_missing_matcher_hashes_differently_from_an_empty_one`, `trust::labels_are_snake_case` |
+| Trust keys carry real indices and only perch handlers, and refresh after a reorder | `trust::entries_use_real_indices_and_only_perch_handlers`, `setup_lifecycle::reordering_hooks_json_refreshes_the_indices` |
+| Trust writes keep foreign keys and formatting; uninstall removes only ours | `trust::upsert_keeps_foreign_keys_and_formatting`, `trust::remove_takes_only_the_named_keys`, `setup_lifecycle::setup_writes_codex_trust_records_and_uninstall_removes_them` |
+| The tmux snippet binds through `run-shell` with an explicit client, sources cleanly and twice | `install::tmux_snippet_binds_through_run_shell_with_an_explicit_client`, `hook_end_to_end::install_tmux_writes_the_popup_binding_and_prints_the_source_line`, `e2e_setup::setup_wires_a_fake_home_and_a_real_tmux_server` |
+| `setup` wires what is present, skips what is absent, is idempotent | `setup_lifecycle::setup_wires_present_harnesses_skips_absent_and_is_idempotent`, `setup_lifecycle::setup_only_and_no_tmux_restrict_the_run` |
+| `uninstall` restores the originals and leaves other lines alone | `setup_lifecycle::uninstall_restores_the_originals_and_leaves_other_lines`, `setup_lifecycle::uninstall_keep_state_and_dry_run`, `setup::strip_keeps_other_entries_and_user_arrays` |
+| `doctor` exits non-zero while unwired and zero once wired | `setup_lifecycle::doctor_reports_unwired_then_wired`, `e2e_setup::setup_wires_a_fake_home_and_a_real_tmux_server` |
+| The unwired nudge goes to stderr only | `setup_lifecycle::list_and_status_nudge_on_stderr_only`, `tui_render::banner_shows_only_when_a_harness_is_unwired` |
+| A partial or legacy config still loads with defaults | `config::partial_toml_keeps_defaults`, `config::a_pre_sound_only_config_still_loads`, `config::defaults_match_the_plan` |
+| `install.sh` is strict, shellcheck-clean and runs setup | `install_script::*` |
+
+### The dashboard as a picture
+
+| rule | test(s) |
+| --- | --- |
+| Every state renders its glyph and word | `tui_render::every_state_renders_its_glyph_and_name`, `golden::grouped_board_120x24`, `golden::ended_rows_appear_with_e` |
+| The empty state says what to do | `tui_render::empty_store_renders_without_panicking`, `golden::empty_state_80x24` |
+| The footer is one line | `tui_render::the_footer_is_one_line_of_essentials_and_a_status`, `e2e_tui_render::the_tui_renders_the_seeded_rows_in_a_real_pane` |
+| The help overlay lists every key and the legend | `tui_render::the_help_overlay_shows_every_key_and_the_state_legend`, `golden::help_overlay_120x24` |
+| The light theme changes colours, not layout | `tui_render::light_theme_renders_without_panicking`, `golden::light_theme_120x24` |
+| 80 and 40 columns truncate without panicking or wrapping | `tui_render::narrow_terminals_truncate_instead_of_panicking`, `golden::grouped_board_80x24` |
+| A message with newlines, tabs or ANSI escapes is one flat line | `tui_render::control_characters_in_a_message_are_flattened`, `tui_render::long_message_is_one_truncated_line` |
+| A very long project name is truncated, not wrapped | `tui_render::a_very_long_project_name_is_truncated` |
+| The real binary draws all of it in a real pane | `e2e_tui_render::the_tui_renders_the_seeded_rows_in_a_real_pane`, `e2e_tui_render::the_real_pane_render_matches_the_golden` |
