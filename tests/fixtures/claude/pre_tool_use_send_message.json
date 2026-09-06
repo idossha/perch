@@ -1,0 +1,1 @@
+{"session_id":"s-1","transcript_path":"/tmp/t.jsonl","cwd":"/Users/x/00_development/perch","scratchpad_dir":"/tmp/scratch","prompt_id":"p-1","permission_mode":"default","effort":"high","hook_event_name":"PreToolUse","tool_name":"SendMessage","tool_input":{"to":"a41eb56e05dc8146f","message":"keep going on the reducer"},"tool_use_id":"toolu_1"}

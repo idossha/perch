@@ -91,8 +91,19 @@ pub enum Event {
         agent_type: Option<String>,
     },
     /// A subagent finished; the message is its final assistant message.
+    ///
+    /// `agent_type` is Claude's role label, and is absent for a resumed or an
+    /// internal helper agent — the reducer uses that to tell a stop it missed
+    /// the start of from a helper it should never have tracked.
     SubagentStop {
         last_message: Option<String>,
+        agent_type: Option<String>,
+    },
+    /// The parent sent a message to an existing background subagent
+    /// (`SendMessage`), which resumes it. Claude fires no `SubagentStart` for
+    /// a resume, so this is the only signal that the child is running again.
+    SubagentResume {
+        id: String,
     },
     /// A tool is about to run: the agent is working, whatever it was doing
     /// before. Only ever clears a stale `needs_input`.
@@ -115,6 +126,7 @@ impl Event {
             Event::SessionEnd => "session_end",
             Event::SubagentStart { .. } => "subagent_start",
             Event::SubagentStop { .. } => "subagent_stop",
+            Event::SubagentResume { .. } => "subagent_resume",
             Event::ToolUse => "tool_use",
             Event::Observed { label } => label,
         }

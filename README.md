@@ -164,7 +164,8 @@ Claude runs subagents in the background: the main agent's turn ends while they
 keep working, and it is woken again when each one finishes. A pane in that
 state reads `▶ delegating` — it sorts with the working panes, gets no chime and
 no card, and `n` skips it. It goes back to saying `done` (and chimes on the
-next turn's end) once its subagents are in.
+next turn's end) once its subagents are in. Sending a follow-up to a background agent
+counts too, and an agent Claude runs for its own internal purposes does not.
 
 | key | action |
 |---|---|

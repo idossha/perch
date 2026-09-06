@@ -26,6 +26,7 @@ pub fn parse(raw: &serde_json::Value) -> anyhow::Result<Option<ParsedEvent>> {
         },
         "SubagentStop" => Event::SubagentStop {
             last_message: first_str(raw, MESSAGE_KEYS),
+            agent_type: first_str(raw, &["agent_type"]),
         },
         "SessionStart" if agent_id.is_none() => Event::SessionStart,
         "UserPromptSubmit" if agent_id.is_none() => Event::UserPromptSubmit,

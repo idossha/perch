@@ -32,6 +32,7 @@ pub fn parse(raw: &serde_json::Value) -> anyhow::Result<Option<ParsedEvent>> {
         },
         "SubagentStop" => Event::SubagentStop {
             last_message: str_field(raw, "last_assistant_message"),
+            agent_type: str_field(raw, "agent_type"),
         },
         // Without an agent id these are ordinary session events.
         "SessionStart" if agent_id.is_none() => Event::SessionStart,
@@ -67,7 +68,13 @@ pub fn parse(raw: &serde_json::Value) -> anyhow::Result<Option<ParsedEvent>> {
             }
         }
         "SessionEnd" if agent_id.is_none() => Event::SessionEnd,
-        "PreToolUse" if agent_id.is_none() => Event::ToolUse,
+        // `SendMessage` resumes an existing background subagent, and Claude
+        // sends no `SubagentStart` for that. Its target is the only place the
+        // agent id appears, so the pre-tool payload is where a resume is seen.
+        "PreToolUse" if agent_id.is_none() => match send_message_target(raw) {
+            Some(id) => Event::SubagentResume { id },
+            None => Event::ToolUse,
+        },
         // PreCompact and friends are noise for the dashboard; so is a
         // session-level event attributed to a subagent.
         _ => return Ok(None),
@@ -79,6 +86,24 @@ pub fn parse(raw: &serde_json::Value) -> anyhow::Result<Option<ParsedEvent>> {
         cwd: str_field(raw, "cwd"),
         agent_id,
     }))
+}
+
+/// The agent id a `PreToolUse` for `SendMessage` is addressed to.
+///
+/// `tool_input.to` is an agent id for a subagent and a name for a teammate or
+/// a session; the id is kept exactly as given, minus the ` [ref]` suffix the
+/// tool accepts.
+fn send_message_target(raw: &serde_json::Value) -> Option<String> {
+    if raw.get("tool_name").and_then(|v| v.as_str())? != "SendMessage" {
+        return None;
+    }
+    let to = raw.get("tool_input")?.get("to")?.as_str()?;
+    let to = match to.split_once(" [") {
+        Some((head, _)) => head,
+        None => to,
+    };
+    let to = to.trim();
+    (!to.is_empty()).then(|| to.to_string())
 }
 
 fn str_field(raw: &serde_json::Value, key: &str) -> Option<String> {

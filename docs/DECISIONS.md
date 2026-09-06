@@ -423,3 +423,38 @@ which previously never touched tmux.
 **Revisit if** a harness starts reporting subagents that genuinely cannot
 outlive the parent turn, or if the two-hour cap proves either too slow to
 repair a lost `SubagentStop` or too quick for a real long-running fan-out.
+
+## 17. Resumed agents are tracked from `SendMessage`, helper stops are ignored — 2026-09-05
+
+**Decision.** A Claude `PreToolUse` for the `SendMessage` tool with a non-empty
+`tool_input.to` becomes `Event::SubagentResume { id }`: the named child is set
+`working` with `since` = now, keeping its `agent_type` and last message, and is
+created if perch has never seen it. It is not a parent transition and asks for
+no sound; it makes the pane **delegating** after its next `Stop`, until the
+matching `SubagentStop`. Conversely a `SubagentStop` for an id perch does not
+know is recorded as a finished child **only if** `agent_type` is non-empty; an
+unknown id with an empty `agent_type` is logged to `events.jsonl` and dropped.
+Every other `PreToolUse` is still `ToolUse`, and the caps, the TTL and the
+retire rules of decision 16 are unchanged.
+
+**Why.** Captured payloads show `SubagentStart` fires only for a *fresh* spawn:
+resuming a background agent through `SendMessage` fires nothing, so the pane
+went `done` and stayed `done` while a real agent worked — decision 16's
+delegating state, blind to half the agents it was written for. The tool's
+target is the one place the id appears before the run. The mirror problem is
+Claude's internal helper agents, which finish constantly with an empty
+`agent_type` and no start — 310 unpaired stops in one day's capture; treating
+those as subagents filled panes with rows for work the user never asked for.
+`agent_type` is the only field that separates the two, so it is what the rule
+turns on.
+
+**Cost.** A `SendMessage` to a teammate or a session, whose `to` is a name
+rather than an agent id, creates a child row named after them; it retires like
+any other on the two-hour cap. A real spawned agent whose `SubagentStart` was
+lost *and* whose stop carries an empty `agent_type` is now invisible rather
+than appearing as a spurious finished child. `PreToolUse` parsing does one
+extra string compare per tool call.
+
+**Revisit if** Claude starts firing `SubagentStart` on resume, gives helper
+agents a distinguishable `agent_type`, or exposes the resumed agent's id
+anywhere earlier than the tool call.

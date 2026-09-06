@@ -100,6 +100,57 @@ fn a_finished_dialog_or_a_tool_call_is_tool_use() {
     assert_eq!(parse("pre_tool_use.json").unwrap().event, Event::ToolUse);
 }
 
+/// `SendMessage` resumes an existing background subagent; the id lives in
+/// `tool_input.to` and nowhere else, and every other tool stays a tool call.
+#[test]
+fn a_send_message_pre_tool_use_is_a_resume() {
+    let p = parse("pre_tool_use_send_message.json").unwrap();
+    assert_eq!(
+        p.event,
+        Event::SubagentResume {
+            id: "a41eb56e05dc8146f".into()
+        }
+    );
+    assert_eq!(p.agent_id, None, "the resume names the child, not the pane");
+    assert_eq!(p.session_id.as_deref(), Some("s-1"));
+
+    // A ` [ref]` suffix is dropped; an empty or missing target is not a resume.
+    let mut raw = fixture("pre_tool_use_send_message.json");
+    raw["tool_input"]["to"] = serde_json::json!("a41eb56e05dc8146f [ref]");
+    assert_eq!(
+        adapters::parse(Harness::Claude, &raw)
+            .unwrap()
+            .unwrap()
+            .event,
+        Event::SubagentResume {
+            id: "a41eb56e05dc8146f".into()
+        }
+    );
+    raw["tool_input"]["to"] = serde_json::json!("");
+    assert_eq!(
+        adapters::parse(Harness::Claude, &raw)
+            .unwrap()
+            .unwrap()
+            .event,
+        Event::ToolUse
+    );
+}
+
+/// A helper agent's stop carries an empty `agent_type`; the reducer needs to
+/// see that, so the adapter keeps the distinction.
+#[test]
+fn a_helper_stop_has_no_agent_type() {
+    let p = parse("subagent_stop_helper.json").unwrap();
+    assert_eq!(
+        p.event,
+        Event::SubagentStop {
+            last_message: None,
+            agent_type: None
+        }
+    );
+    assert_eq!(p.agent_id.as_deref(), Some("helper-1"));
+}
+
 #[test]
 fn untracked_events_are_dropped() {
     assert!(parse("precompact.json").is_none());
@@ -121,7 +172,8 @@ fn subagent_events_carry_the_agent_id() {
     assert_eq!(
         p.event,
         Event::SubagentStop {
-            last_message: Some("Found it in src/reducer.rs.".into())
+            last_message: Some("Found it in src/reducer.rs.".into()),
+            agent_type: Some("Explore".into())
         }
     );
     assert_eq!(p.agent_id.as_deref(), Some("sub-7"));

@@ -35,6 +35,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A background subagent you send a follow-up to is tracked again.** Claude
+  fires no `SubagentStart` when the `SendMessage` tool resumes an existing
+  agent, so perch called the pane `done` while that agent worked. The pane now
+  reads `delegating` from the moment the message is sent until the agent
+  finishes.
+- **Claude's internal helper agents no longer fill the board.** They finish
+  constantly without ever starting, and each unpaired stop used to invent a
+  finished subagent row. A stop for an unknown agent with no `agent_type` is
+  logged and dropped.
 - **A pane with running subagents is no longer reported as finished.** Its turn
   ending used to mark every subagent done, chime, and draw a done card — so
   perch told you a job was over while three agents were still working on it,

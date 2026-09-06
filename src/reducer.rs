@@ -48,6 +48,14 @@ pub fn apply_with(
         prune_children(rec, now);
         return out;
     }
+    // A resume is a parent-session payload that names a child: the pane's own
+    // state is untouched, the child's is not.
+    if let Event::SubagentResume { id } = &parsed.event {
+        let id = id.clone();
+        let out = apply_child(rec, &id, parsed, now);
+        prune_children(rec, now);
+        return out;
+    }
     if let Some(sid) = &parsed.session_id {
         rec.session_id = Some(sid.clone());
     }
@@ -87,7 +95,9 @@ pub fn apply_with(
         Event::Observed { .. } => return Applied::default(),
         Event::SessionEnd => State::Ended,
         // A subagent event that names no child moves nothing.
-        Event::SubagentStart { .. } | Event::SubagentStop { .. } => return Applied::default(),
+        Event::SubagentStart { .. } | Event::SubagentStop { .. } | Event::SubagentResume { .. } => {
+            return Applied::default()
+        }
     };
 
     // A `Stop` does *not* retire children: Claude runs subagents in the
@@ -169,12 +179,29 @@ fn enforce_cap(rec: &mut PaneRecord) {
 
 /// Fold a subagent event into the parent record's `children`.
 fn apply_child(rec: &mut PaneRecord, agent_id: &str, parsed: &ParsedEvent, now: &str) -> Applied {
+    let known = rec.children.iter().any(|c| c.id == agent_id);
     let (state, message, agent_type) = match &parsed.event {
         Event::SubagentStart { agent_type } => (State::Working, None, agent_type.clone()),
-        Event::SubagentStop { last_message } => (
+        // A resume restarts a child perch may never have seen start: Claude
+        // sends `SubagentStart` only for a fresh spawn.
+        Event::SubagentResume { .. } => (State::Working, None, None),
+        // A stop for an id perch does not know, with no `agent_type`, is one
+        // of Claude's internal helper agents: they run constantly and produce
+        // unpaired stops (310 of them in one day's capture). Inventing a child
+        // for each would fill every pane with agents the user never asked for,
+        // so the event is logged by the hook and dropped here. A stop that
+        // does carry an `agent_type` is a real spawned agent whose start was
+        // missed, and is worth recording as finished.
+        Event::SubagentStop {
+            agent_type: None, ..
+        } if !known => return Applied::default(),
+        Event::SubagentStop {
+            last_message,
+            agent_type,
+        } => (
             State::Done,
             last_message.as_ref().map(|m| one_line(m)),
-            None,
+            agent_type.clone(),
         ),
         Event::Stop { last_message } => (
             State::Done,
@@ -193,7 +220,9 @@ fn apply_child(rec: &mut PaneRecord, agent_id: &str, parsed: &ParsedEvent, now: 
 
     match rec.children.iter_mut().find(|c| c.id == agent_id) {
         Some(child) => {
-            if child.state != state {
+            // A resume restarts the clock even when the child was already
+            // `working`: the pane is delegating again from now.
+            if child.state != state || matches!(parsed.event, Event::SubagentResume { .. }) {
                 child.state = state;
                 child.since = now.to_string();
             }
@@ -293,6 +322,15 @@ pub mod tests_support {
             session_id: None,
             cwd: None,
             agent_id: Some(agent_id.to_string()),
+        }
+    }
+
+    /// A `SubagentStop` for a real spawned agent: it carries an `agent_type`,
+    /// so the reducer will record it even for an id it never saw start.
+    pub fn stop(last_message: Option<&str>) -> Event {
+        Event::SubagentStop {
+            last_message: last_message.map(|s| s.to_string()),
+            agent_type: Some("Explore".into()),
         }
     }
 
@@ -425,19 +463,133 @@ mod subagent_tests {
         assert_eq!(r.children[0].agent_type.as_deref(), Some("Explore"));
         assert_eq!(r.children[0].state, State::Working);
 
+        apply(&mut r, &child("a-1", stop(Some("found  it"))), "t2");
+        assert_eq!(r.children.len(), 1);
+        assert_eq!(r.children[0].state, State::Done);
+        assert_eq!(r.children[0].last_message.as_deref(), Some("found it"));
+    }
+
+    /// `SendMessage` to an id perch never saw start: Claude fires no
+    /// `SubagentStart` for a resume, so the resume is the whole signal.
+    #[test]
+    fn a_resume_of_an_unknown_id_creates_a_working_child() {
+        let mut r = PaneRecord::new("%1", Harness::Claude, "t0");
+        let out = apply(
+            &mut r,
+            &top(Event::SubagentResume {
+                id: "a41eb56e05dc8146f".into(),
+            }),
+            "t1",
+        );
+        assert!(!out.parent_changed, "a resume never moves the pane");
+        assert_eq!(out.sound, None);
+        assert_eq!(r.children.len(), 1);
+        assert_eq!(r.children[0].id, "a41eb56e05dc8146f");
+        assert_eq!(r.children[0].agent_type, None);
+        assert_eq!(r.children[0].state, State::Working);
+        assert_eq!(r.children[0].since, "t1");
+    }
+
+    #[test]
+    fn a_resume_of_a_finished_child_puts_it_back_to_work() {
+        let mut r = PaneRecord::new("%1", Harness::Claude, "t0");
+        apply(
+            &mut r,
+            &child(
+                "a-1",
+                Event::SubagentStart {
+                    agent_type: Some("Explore".into()),
+                },
+            ),
+            &now(),
+        );
+        apply(&mut r, &child("a-1", stop(Some("found it"))), &now());
+        assert_eq!(r.children[0].state, State::Done);
+
+        let t = now();
+        apply(&mut r, &top(Event::SubagentResume { id: "a-1".into() }), &t);
+        assert_eq!(r.children.len(), 1, "the same child, not a second one");
+        assert_eq!(r.children[0].state, State::Working);
+        assert_eq!(r.children[0].since, t);
+        assert_eq!(
+            r.children[0].agent_type.as_deref(),
+            Some("Explore"),
+            "a resume keeps what the spawn told us"
+        );
+        assert_eq!(r.children[0].last_message.as_deref(), Some("found it"));
+    }
+
+    /// The pane goes `done` while the resumed agent runs — Claude wakes the
+    /// parent with a task notification — so the board must say delegating
+    /// until the matching `SubagentStop`.
+    #[test]
+    fn a_resumed_child_keeps_the_pane_delegating_until_its_stop() {
+        let mut r = PaneRecord::new("%1", Harness::Claude, "t0");
+        apply(&mut r, &top(Event::UserPromptSubmit), &now());
+        apply(
+            &mut r,
+            &top(Event::SubagentResume { id: "a-1".into() }),
+            &now(),
+        );
+        let out = apply_with(
+            &mut r,
+            &top(Event::Stop { last_message: None }),
+            &now(),
+            false,
+        );
+        assert_eq!(r.state, State::Done);
+        assert_eq!(out.sound, None, "no chime while a resumed agent runs");
+        assert!(r.is_delegating());
+        assert_eq!(r.effective_state(), State::Working);
+
+        apply(&mut r, &child("a-1", stop(Some("done at last"))), &now());
+        assert_eq!(r.effective_state(), State::Done, "back to its own state");
+        assert!(!r.is_delegating());
+    }
+
+    /// Claude's internal helper agents produce a constant stream of unpaired
+    /// `SubagentStop`s with an empty `agent_type` — 310 in one day's capture.
+    /// They are logged and dropped, never turned into children.
+    #[test]
+    fn a_helper_stop_for_an_unknown_id_is_ignored() {
+        let mut r = PaneRecord::new("%1", Harness::Claude, "t0");
+        let out = apply(
+            &mut r,
+            &child(
+                "helper-1",
+                Event::SubagentStop {
+                    last_message: None,
+                    agent_type: None,
+                },
+            ),
+            &now(),
+        );
+        assert!(r.children.is_empty(), "{:?}", r.children);
+        assert_eq!(out, Applied::default());
+
+        // But a stop for a child perch is already tracking still lands, and so
+        // does one that names an agent_type: that is a spawn whose start we
+        // missed, not a helper.
+        apply(
+            &mut r,
+            &top(Event::SubagentResume { id: "a-1".into() }),
+            &now(),
+        );
         apply(
             &mut r,
             &child(
                 "a-1",
                 Event::SubagentStop {
-                    last_message: Some("found  it".into()),
+                    last_message: None,
+                    agent_type: None,
                 },
             ),
-            "t2",
+            &now(),
         );
-        assert_eq!(r.children.len(), 1);
         assert_eq!(r.children[0].state, State::Done);
-        assert_eq!(r.children[0].last_message.as_deref(), Some("found it"));
+        apply(&mut r, &child("a-2", stop(None)), &now());
+        assert_eq!(r.children.len(), 2);
+        assert_eq!(r.children[1].state, State::Done);
     }
 
     #[test]
@@ -479,11 +631,7 @@ mod subagent_tests {
     #[test]
     fn a_new_turn_clears_done_children_but_keeps_running_ones() {
         let mut r = PaneRecord::new("%1", Harness::Claude, "t0");
-        apply(
-            &mut r,
-            &child("done", Event::SubagentStop { last_message: None }),
-            &now(),
-        );
+        apply(&mut r, &child("done", stop(None)), &now());
         apply(
             &mut r,
             &child("busy", Event::SubagentStart { agent_type: None }),
@@ -497,16 +645,8 @@ mod subagent_tests {
     #[test]
     fn finished_children_are_pruned_after_ten_minutes() {
         let mut r = PaneRecord::new("%1", Harness::Claude, "t0");
-        apply(
-            &mut r,
-            &child("old", Event::SubagentStop { last_message: None }),
-            &ago(700),
-        );
-        apply(
-            &mut r,
-            &child("fresh", Event::SubagentStop { last_message: None }),
-            &ago(60),
-        );
+        apply(&mut r, &child("old", stop(None)), &ago(700));
+        apply(&mut r, &child("fresh", stop(None)), &ago(60));
         // Any later write prunes.
         apply(
             &mut r,
@@ -547,17 +687,9 @@ mod subagent_tests {
 
         // The last child finishing is still silent: the parent is woken by the
         // task notification and its next Stop chimes normally.
-        apply(
-            &mut r,
-            &child("a", Event::SubagentStop { last_message: None }),
-            &now(),
-        );
+        apply(&mut r, &child("a", stop(None)), &now());
         assert_eq!(r.effective_state(), State::Working, "b is still running");
-        let out = apply(
-            &mut r,
-            &child("b", Event::SubagentStop { last_message: None }),
-            &now(),
-        );
+        let out = apply(&mut r, &child("b", stop(None)), &now());
         assert_eq!(out.sound, None);
         assert!(!out.parent_changed);
         assert_eq!(r.effective_state(), State::Done, "own state, at last");
@@ -632,11 +764,7 @@ mod subagent_tests {
         // A Stop you watched land: idle, and its finished children go — but a
         // running one stays, and keeps the pane delegating.
         let mut r = PaneRecord::new("%1", Harness::Claude, "t0");
-        apply(
-            &mut r,
-            &child("done", Event::SubagentStop { last_message: None }),
-            &now(),
-        );
+        apply(&mut r, &child("done", stop(None)), &now());
         apply(
             &mut r,
             &child("busy", Event::SubagentStart { agent_type: None }),
@@ -661,11 +789,7 @@ mod subagent_tests {
         // store re-applies the clearing rule on every read, and no longer
         // retires the running child.
         let mut r = PaneRecord::new("%2", Harness::Claude, "t0");
-        apply(
-            &mut r,
-            &child("a", Event::SubagentStop { last_message: None }),
-            &now(),
-        );
+        apply(&mut r, &child("a", stop(None)), &now());
         apply(
             &mut r,
             &child("busy", Event::SubagentStart { agent_type: None }),
@@ -683,11 +807,7 @@ mod subagent_tests {
         let mut r = PaneRecord::new("%1", Harness::Claude, "t0");
         // Two finished, then eighteen running: the list is exactly full.
         for id in ["old-done", "newer-done"] {
-            apply(
-                &mut r,
-                &child(id, Event::SubagentStop { last_message: None }),
-                &now(),
-            );
+            apply(&mut r, &child(id, stop(None)), &now());
         }
         for n in 0..18 {
             apply(
@@ -733,11 +853,7 @@ mod subagent_tests {
     #[test]
     fn an_unparseable_now_never_prunes() {
         let mut r = PaneRecord::new("%1", Harness::Claude, "t0");
-        apply(
-            &mut r,
-            &child("old", Event::SubagentStop { last_message: None }),
-            &ago(700),
-        );
+        apply(&mut r, &child("old", stop(None)), &ago(700));
         apply(
             &mut r,
             &child("busy", Event::SubagentStart { agent_type: None }),

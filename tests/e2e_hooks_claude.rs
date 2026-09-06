@@ -169,6 +169,59 @@ fn claude_hooks_drive_state_through_a_real_server() {
     ));
     assert!(children_of(&s, &a).is_empty(), "{:?}", children_of(&s, &a));
 
+    // A resumed background agent: `SendMessage` is the only signal, and the
+    // parent legitimately goes done while the agent keeps running.
+    s.tmux(&["select-window", "-t", "one:1"]);
+    assert!(wait_for(
+        || s.client_pane(&client.name) == b,
+        Duration::from_secs(2)
+    ));
+    s.hook(&a, "claude", &f("user_prompt_submit.json"));
+    s.hook(&a, "claude", &f("pre_tool_use_send_message.json"));
+    let kids = children_of(&s, &a);
+    assert_eq!(kids.len(), 1, "{kids:?}");
+    assert_eq!(kids[0]["id"], "a41eb56e05dc8146f");
+    assert_eq!(kids[0]["state"], "working");
+
+    s.hook(&a, "claude", &f("stop.json"));
+    assert_eq!(s.state_of(&a), "done");
+    assert_eq!(
+        s.effective_of(&a),
+        "working",
+        "a resumed agent keeps the pane delegating"
+    );
+    assert_pane_state(&s, &a, "working");
+    assert!(
+        children_of(&s, &a)[0]["state"] == "working",
+        "{:?}",
+        children_of(&s, &a)
+    );
+
+    // A helper agent's stop is logged and dropped; the resumed agent's is not.
+    s.hook(&a, "claude", &f("subagent_stop_helper.json"));
+    assert_eq!(children_of(&s, &a).len(), 1, "no child for a helper stop");
+    s.hook(
+        &a,
+        "claude",
+        &f("subagent_stop_helper.json")
+            .replace("helper-1", "a41eb56e05dc8146f")
+            .replace("\"agent_type\":\"\"", "\"agent_type\":\"Explore\""),
+    );
+    assert_eq!(s.effective_of(&a), "done");
+    assert_eq!(s.state_of(&a), "done");
+    assert_pane_state(&s, &a, "done");
+
+    // Back to the pane, so the next steps start from a clean record.
+    s.tmux(&["select-window", "-t", "one:0"]);
+    assert!(wait_for(
+        || s.client_pane(&client.name) == a,
+        Duration::from_secs(2)
+    ));
+    assert!(wait_for(
+        || s.state_of(&a) == "idle" && children_of(&s, &a).is_empty(),
+        Duration::from_secs(3)
+    ));
+
     s.hook(&a, "claude", &f("session_end.json"));
     assert_eq!(s.state_of(&a), "ended");
     assert_pane_state(&s, &a, "ended");
@@ -178,6 +231,14 @@ fn claude_hooks_drive_state_through_a_real_server() {
     assert!(events.contains("\"event\":\"session_start\""), "{events}");
     assert!(events.contains("\"event\":\"stop\""), "{events}");
     assert!(events.contains("\"event\":\"session_end\""), "{events}");
+    assert!(
+        events.contains("\"event\":\"subagent_resume\""),
+        "a resume is logged: {events}"
+    );
+    assert!(
+        events.contains("\"event\":\"subagent_stop\""),
+        "so is the helper stop it dropped: {events}"
+    );
 
     // Only the two seeded panes exist; the hook invented nothing.
     let panes = s.tmux_out(&["list-panes", "-a", "-F", "#{pane_id}"]);

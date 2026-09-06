@@ -94,7 +94,8 @@ fn subagent_events_carry_the_agent_id() {
     assert_eq!(
         p.event,
         Event::SubagentStop {
-            last_message: Some("Reviewed the diff.".into())
+            last_message: Some("Reviewed the diff.".into()),
+            agent_type: None
         }
     );
     assert_eq!(p.agent_id.as_deref(), Some("a-7"));

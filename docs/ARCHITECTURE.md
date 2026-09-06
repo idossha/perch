@@ -159,6 +159,45 @@ notification when each finishes (`SubagentStop`, then a new turn that ends with
 another `Stop`). So a pane whose own last event was `Stop` but whose children
 are still running is not idle and is not waiting on you.
 
+### How Claude actually signals
+
+Verified against captured payloads, because three of the four are not what the
+hook names suggest:
+
+1. A main-agent `Stop` **never** carries `agent_id`. Attribution to a subagent
+   is the only thing that makes an event a child event.
+2. `SubagentStart` fires **only for a fresh spawn** (`agent_id`, `agent_type`).
+   Resuming an existing background agent with the `SendMessage` tool fires no
+   start at all.
+3. `SubagentStop` fires **every time a subagent finishes a run**, including
+   each resumed run. For a resumed agent and for Claude's internal helper
+   agents `agent_type` is `""` and there was no matching `SubagentStart`.
+4. The parent is woken by a task notification delivered as a *user prompt*:
+   `UserPromptSubmit` → turn → `Stop`. A parent legitimately goes done/idle
+   while resumed agents keep running.
+
+So the only signal that an existing agent is running again is the parent's
+`PreToolUse` for `SendMessage`, whose `tool_input.to` holds the agent id (a
+name, for a teammate or a session; the ` [ref]` suffix is dropped, the rest
+kept verbatim). The mapping:
+
+| Claude payload | perch event | effect on `children` |
+|---|---|---|
+| `SubagentStart` (`agent_id`, `agent_type`) | `SubagentStart` | upsert, `working`, records `agent_type` |
+| `PreToolUse` `SendMessage` with `tool_input.to` | `SubagentResume { id }` | upsert `id` `working`, `since` = now, keeps `agent_type` and message |
+| `PreToolUse`, any other tool | `ToolUse` | none |
+| `SubagentStop`, id known | `SubagentStop` | that child → `done`, keeps its last message |
+| `SubagentStop`, id unknown, `agent_type` non-empty | `SubagentStop` | new child, `done` — a spawn whose start was missed |
+| `SubagentStop`, id unknown, `agent_type` `""` | `SubagentStop` | **none**: an internal helper, logged only |
+| `Stop` / `Notification` with `agent_id` | `Stop` / `NeedsInput` | that child |
+| `Stop` without `agent_id` | `Stop` | the pane's own state |
+
+The last row of the child rules is load-bearing. Claude's internal helper
+agents produce a constant stream of unpaired stops with an empty `agent_type` —
+310 of them in a single day's capture — and creating a child for each would
+bury every pane under subagents the user never asked for and keep it
+permanently delegating. They are recorded in `events.jsonl` and dropped.
+
 That is what `PaneRecord::effective_state` computes: when the pane's own state
 is `done` or `idle` and any child is `working` or `starting`, the state the user
 is shown is `working`, and the word for it is **delegating**. Everything
