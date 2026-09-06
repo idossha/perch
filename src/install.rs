@@ -333,12 +333,22 @@ pub const TMUX_SNIPPET: &str = "\
 bind g run-shell 'perch open --client \"#{client_name}\"'
 bind N run-shell 'perch next --client \"#{client_name}\"'
 # Looking at a finished pane marks it seen: done -> idle.
+# `perch seen` with no argument re-evaluates every done pane against the live
+# client list, so it does not matter which hook fired or which pane it names.
 # Indexed slots so your own hooks in these events are left alone.
-# (`pane-focus-in` never fires on tmux 3.6 here, so window/pane/session
-# switches are what count as \"looking at it\".)
-set-hook -g 'after-select-window[42]' \"run-shell -b 'perch seen #{pane_id}'\"
-set-hook -g 'after-select-pane[42]' \"run-shell -b 'perch seen #{pane_id}'\"
-set-hook -g 'client-session-changed[42]' \"run-shell -b 'perch seen #{pane_id}'\"
+# `window-pane-changed` and `session-window-changed` are the state-change
+# hooks: they fire for next-window, previous-window, last-window, last-pane
+# and switch-client too, which the `after-<command>` hooks never do.
+# (tmux 3.6 has no after-next-window / after-last-pane / after-switch-client.)
+set-hook -g 'after-select-window[42]' \"run-shell -b 'perch seen'\"
+set-hook -g 'after-select-pane[42]' \"run-shell -b 'perch seen'\"
+set-hook -g 'client-session-changed[42]' \"run-shell -b 'perch seen'\"
+set-hook -g 'window-pane-changed[42]' \"run-shell -b 'perch seen'\"
+set-hook -g 'session-window-changed[42]' \"run-shell -b 'perch seen'\"
+set-hook -g 'client-focus-in[42]' \"run-shell -b 'perch seen'\"
+# Focus events are what tell tmux the terminal window itself is in front; the
+# seen rule uses them, and without this a backgrounded terminal reads as seen.
+set -g focus-events on
 # Opt in to a status-line counter by prepending it to your theme's status-right, e.g.:
 #   set -ga status-right '#(perch status --format tmux) '
 ";

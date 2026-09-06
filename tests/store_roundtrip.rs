@@ -119,3 +119,50 @@ fn age_formatting_and_parsing() {
     assert_eq!(store::fmt_age(store::age_secs(&since, now)), "5m");
     assert_eq!(store::age_secs("not-a-date", now), 0);
 }
+
+/// Seen is a property of the live client list, evaluated on every read.
+///
+/// A `done` pane a focused client is showing becomes `idle` inside
+/// `snapshot`, with no hook involved; a `done` pane nobody is showing stays
+/// `done`; and a pane merely on an *unfocused* client's screen stays `done`
+/// as long as the server knows about focus at all.
+#[test]
+fn snapshot_marks_done_panes_a_focused_client_is_showing_as_idle() {
+    with_state_dir(|| {
+        let ts = store::now_rfc3339();
+        let live = |ids: &[&str]| perch::tmux::NullTmux {
+            panes: ids
+                .iter()
+                .map(|p| {
+                    perch::tmux::parse_pane_line(&format!("{p} one 0 0 1 1 claude 1 shell"))
+                        .unwrap()
+                })
+                .collect(),
+        };
+
+        for p in ["%1", "%2", "%3"] {
+            store::save(&rec(p, State::Done, &ts)).unwrap();
+        }
+        // %1 is on a focused client, %2 on an unfocused one, %3 on none.
+        std::env::set_var("PERCH_FAKE_VIEWERS", "%1:focused,%2");
+        let out = store::snapshot(&live(&["%1", "%2", "%3"]));
+        let state = |p: &str| out.iter().find(|r| r.pane == p).unwrap().state;
+        assert_eq!(state("%1"), State::Idle, "a focused client is showing it");
+        assert_eq!(state("%2"), State::Done, "on screen, but not looked at");
+        assert_eq!(state("%3"), State::Done, "nobody is showing it");
+        // Written through, not just reported.
+        assert_eq!(store::load("%1").unwrap().state, State::Idle);
+        assert_eq!(store::load("%2").unwrap().state, State::Done);
+
+        // No client anywhere reports focus: the flag carries no information,
+        // so any viewer counts and %2 is seen after all.
+        std::env::set_var("PERCH_FAKE_VIEWERS", "%2");
+        let out = store::snapshot(&live(&["%1", "%2", "%3"]));
+        assert_eq!(
+            out.iter().find(|r| r.pane == "%2").unwrap().state,
+            State::Idle,
+            "no focus info anywhere: a viewer is enough"
+        );
+        std::env::remove_var("PERCH_FAKE_VIEWERS");
+    });
+}

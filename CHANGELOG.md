@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`done` and `idle` are trustworthy again.** Whether a pane has been "seen"
+  is now worked out from the live tmux client list every time anything reads
+  the board, instead of only when one of three tmux hooks happened to fire.
+  Panes you had looked at kept showing `done` because `prefix n`, `prefix p`,
+  `prefix l`, `last-pane` and session pickers fire none of those hooks; now it
+  does not matter how you got there. The tmux hooks are still installed, but
+  they only make the change instant — nothing is lost if they never run.
+- **A pane behind your browser no longer counts as seen.** Deciding a finished
+  turn used to ask only whether the pane was the active pane of an attached
+  session; it now requires a client with the terminal's own keyboard focus, so
+  a turn that ends while you are in another app is `done` and chimes. On a
+  terminal that does not report focus at all, any client showing the pane
+  still counts, so nothing regresses there.
+
+### Changed
+
+- **`perch seen` takes no argument now** and re-checks every finished pane;
+  `perch seen <pane>` still marks one pane seen unconditionally. The tmux
+  snippet points all its hooks at the argument-less form and adds
+  `window-pane-changed`, `session-window-changed` and `client-focus-in`, plus
+  `set -g focus-events on`. Re-run `perch setup` to pick them up.
+- `PERCH_FAKE_CLIENTS` and `PERCH_FAKE_PANE_FOCUSED` are replaced by one
+  `PERCH_FAKE_VIEWERS` (`"%1:focused,%2"`).
+
 ## [0.2.0] - 2026-09-05
 
 ### Changed

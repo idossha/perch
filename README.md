@@ -110,7 +110,7 @@ perch next --client <name>            jump a client to the oldest waiting pane
 perch open --client <name>            open the dashboard in a popup on a client
 perch tui --client <name>             the dashboard itself
 perch sound test <event>              play the sound for done | needs_input | error
-perch seen <pane>                     mark a pane seen: done -> idle
+perch seen [<pane>]                   mark seen panes idle (all, or one named)
 perch install <claude|codex|pi|tmux> [--dry-run] [--print] [--apply]
 perch setup [--dry-run] [--yes] [--no-tmux] [--only ...]
 perch doctor [--json]
@@ -272,10 +272,18 @@ perch uses herdr's definitions:
 | `starting` / `ended` | the session has not reported yet / its pane is gone |
 
 **`done` means finished while you were elsewhere; `idle` means you have seen
-it.** A turn that ends in the pane you are watching goes straight to `idle`
-without a chime, switching to its window or pane marks it seen (a tmux `after-select-window` hook runs
-`perch seen`), and so do `prefix + N` and the TUI's jump. `needs_input` always
-sounds.
+it.** A pane counts as seen when a *focused* tmux client is showing it — where
+"focused" means the terminal window itself has keyboard focus, so a pane left
+on screen behind your browser is not seen. (On a terminal that never reports
+focus, any client showing the pane counts.)
+
+A turn that ends in a pane you are watching goes straight to `idle` without a
+chime. Afterwards, seen is re-evaluated from the live client list on **every
+read** — `perch list`, `perch status`, the dashboard refresh — so a pane you
+have since looked at stops saying `done` however you got there: `prefix n`,
+`prefix p`, `prefix l`, a session picker, or clicking the window. The tmux
+hooks the snippet installs only make it immediate; they are not what makes it
+correct. `needs_input` always sounds.
 
 ## Docs
 

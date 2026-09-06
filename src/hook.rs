@@ -43,17 +43,16 @@ pub fn run(harness: Harness) -> anyhow::Result<()> {
     // remembers where it was once the pane is gone. A pane perch has not
     // located yet pays for one lookup of its own, and never again.
     let t = tmux::current();
-    let (focused, location) = if matches!(parsed.event, crate::model::Event::Stop { .. }) {
-        t.pane_info(&pane)
-    } else if rec.location.is_none() {
-        (false, t.pane_location(&pane))
-    } else {
-        (false, None)
-    };
-    if location.is_some() {
-        rec.location = location;
+    let is_stop = matches!(parsed.event, crate::model::Event::Stop { .. });
+    // Only a Stop asks who is looking (`list-clients`, once); every other
+    // event pays for at most the location lookup, and only the first time.
+    let seen = is_stop && t.pane_seen_now(&pane);
+    if is_stop || rec.location.is_none() {
+        if let Some(loc) = t.pane_location(&pane) {
+            rec.location = Some(loc);
+        }
     }
-    let applied = reducer::apply_with(&mut rec, &parsed, &now, focused);
+    let applied = reducer::apply_with(&mut rec, &parsed, &now, seen);
     let changed = applied.parent_changed;
 
     // A tool call or an observed notice on a pane perch has never seen is not
@@ -83,10 +82,21 @@ pub fn run(harness: Harness) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Mark a pane as seen: a finished turn you are now looking at is just idle.
+/// Mark every `done` pane a focused client is now showing as `idle`.
 ///
-/// Called from the tmux `after-select-window` / `after-select-pane` / `client-session-changed` hooks, from `perch next` and from the TUI's jump, so
-/// `done` means "finished while you were elsewhere" everywhere.
+/// This is what the tmux hooks call. It is the *immediate* path only: the same
+/// rule runs inside [`store::snapshot`] on every read, so a switch tmux never
+/// told perch about still resolves the next time anything looks at the board.
+pub fn seen_all() -> usize {
+    let t = tmux::current();
+    store::mark_seen(t.as_ref(), &store::load_all())
+}
+
+/// Mark one named pane as seen, unconditionally: a finished turn you were just
+/// sent to is just idle.
+///
+/// Called from `perch seen <pane>`, from `perch next` and from the TUI's jump,
+/// which move the client there themselves and so need no evidence.
 pub fn seen(pane: &str) -> bool {
     let Some(mut rec) = store::load(pane) else {
         return false;

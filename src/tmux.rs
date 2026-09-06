@@ -43,32 +43,52 @@ impl LivePane {
     }
 }
 
+/// One attached client, as far as "is anybody looking at this pane" goes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientView {
+    /// The client's *active* pane: what its screen is showing.
+    pub pane: String,
+    pub client: String,
+    /// `#{client_flags}` contains `focused` — the terminal window itself has
+    /// keyboard focus. A terminal that does not report focus never sets it.
+    pub focused: bool,
+}
+
+/// A client that is showing one particular pane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Viewer {
+    pub client: String,
+    pub focused: bool,
+}
+
 /// Anything that can answer "which panes exist right now".
 ///
 /// Injected so the store's liveness check is testable without a real server.
 pub trait Tmux {
     fn list_panes(&self) -> Vec<LivePane>;
-    /// Every attached client, by `#{client_name}`.
-    fn list_clients(&self) -> Vec<String> {
+    /// Every attached client: which pane it shows, its name, its focus flag.
+    ///
+    /// One `list-clients`. This is the whole input to the seen rule, so it is
+    /// fetched once per decision and never per record.
+    fn client_views(&self) -> Vec<ClientView> {
         Vec::new()
     }
-    /// `true` when this pane is the active pane of an attached client — the
-    /// user is looking at it right now.
-    fn pane_focused(&self, pane: &str) -> bool {
-        self.pane_info(pane).0
+
+    /// Every attached client currently showing `pane`.
+    fn viewers(&self, pane: &str) -> Vec<Viewer> {
+        viewers_of(&self.client_views(), pane)
     }
 
-    /// `(focused, location)` for one pane, in a single tmux round trip.
-    ///
-    /// The hook is on the harness's critical path, so the two things it may
-    /// need to ask about a pane are asked together, never twice.
-    fn pane_info(&self, _pane: &str) -> (bool, Option<String>) {
-        (false, None)
+    /// `true` when a focused client is showing this pane right now — see
+    /// [`pane_is_seen`]. One `list-clients`.
+    fn pane_seen_now(&self, pane: &str) -> bool {
+        let views = self.client_views();
+        pane_is_seen(&viewers_of(&views, pane), any_focus_info(&views))
     }
 
     /// The stored location of a pane — see [`parse_location_line`].
-    fn pane_location(&self, pane: &str) -> Option<String> {
-        self.pane_info(pane).1
+    fn pane_location(&self, _pane: &str) -> Option<String> {
+        None
     }
 
     /// Run several tmux commands in one invocation, separated by `;`.
@@ -148,25 +168,32 @@ impl Tmux for NullTmux {
         self.panes.clone()
     }
 
-    /// `PERCH_FAKE_PANE_FOCUSED=1` stands in for a focused pane in tests, and
-    /// the location comes from the injected pane list.
-    fn pane_info(&self, pane: &str) -> (bool, Option<String>) {
-        let focused = std::env::var("PERCH_FAKE_PANE_FOCUSED").is_ok_and(|v| v == "1");
-        let loc = self
-            .panes
+    /// The location comes from the injected pane list.
+    fn pane_location(&self, pane: &str) -> Option<String> {
+        self.panes
             .iter()
             .find(|p| p.pane == pane)
-            .map(|p| p.location(false));
-        (focused, loc)
+            .map(|p| p.location(false))
     }
 
-    /// `PERCH_FAKE_CLIENTS` stands in for attached clients under `PERCH_NO_TMUX`.
-    fn list_clients(&self) -> Vec<String> {
-        std::env::var("PERCH_FAKE_CLIENTS")
+    /// `PERCH_FAKE_VIEWERS="%1:focused,%2"` stands in for `list-clients`:
+    /// a comma-separated list of the pane each client shows, `:focused` when
+    /// that client carries tmux's focus flag.
+    fn client_views(&self) -> Vec<ClientView> {
+        std::env::var("PERCH_FAKE_VIEWERS")
             .unwrap_or_default()
             .split(',')
+            .map(str::trim)
             .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
+            .enumerate()
+            .map(|(i, spec)| {
+                let (pane, flags) = spec.split_once(':').unwrap_or((spec, ""));
+                ClientView {
+                    pane: pane.to_string(),
+                    client: format!("/dev/fake{i}"),
+                    focused: flags.split_whitespace().any(|f| f == "focused"),
+                }
+            })
             .collect()
     }
 
@@ -226,9 +253,9 @@ impl Tmux for RealTmux {
             .collect()
     }
 
-    fn list_clients(&self) -> Vec<String> {
+    fn client_views(&self) -> Vec<ClientView> {
         let out = Command::new("tmux")
-            .args(["list-clients", "-F", "#{client_name}"])
+            .args(["list-clients", "-F", CLIENT_FORMAT])
             .output();
         let Ok(out) = out else { return Vec::new() };
         if !out.status.success() {
@@ -236,32 +263,21 @@ impl Tmux for RealTmux {
         }
         String::from_utf8_lossy(&out.stdout)
             .lines()
-            .map(|l| l.trim().to_string())
-            .filter(|l| !l.is_empty())
+            .filter_map(parse_client_line)
             .collect()
     }
 
-    /// One `display -p`: the focus triple, then the location fields.
-    fn pane_info(&self, pane: &str) -> (bool, Option<String>) {
+    /// One `display -p` for the location fields.
+    fn pane_location(&self, pane: &str) -> Option<String> {
         let out = Command::new("tmux")
-            .args([
-                "display",
-                "-p",
-                "-t",
-                pane,
-                &format!(
-                    "#{{pane_active}}#{{window_active}}#{{session_attached}} {LOCATION_FORMAT}"
-                ),
-            ])
-            .output();
-        let Ok(out) = out else { return (false, None) };
+            .args(["display", "-p", "-t", pane, LOCATION_FORMAT])
+            .output()
+            .ok()?;
         if !out.status.success() {
-            return (false, None);
+            return None;
         }
         let body = String::from_utf8_lossy(&out.stdout);
-        let line = body.lines().next().unwrap_or("");
-        let (focus, rest) = line.split_once(' ').unwrap_or((line, ""));
-        (focus == "111", parse_location_line(rest))
+        parse_location_line(body.lines().next().unwrap_or(""))
     }
 
     /// One `tmux a ; b ; c` invocation, spawned and never waited on.
@@ -317,6 +333,59 @@ pub const PANE_FORMAT: &str = "#{pane_id} #{session_name} #{window_index} \
 /// The location format the hook asks for, so an ended pane still remembers
 /// where it was: `<session> <window_panes> <pane_index> <window name>`.
 pub const LOCATION_FORMAT: &str = "#{session_name} #{window_panes} #{pane_index} #{window_name}";
+
+/// The `list-clients` format behind [`Tmux::client_views`]. Tab-separated: a
+/// client name is a tty path, and flags never contain a tab.
+pub const CLIENT_FORMAT: &str = "#{pane_id}\t#{client_name}\t#{client_flags}";
+
+pub fn parse_client_line(line: &str) -> Option<ClientView> {
+    let mut it = line.splitn(3, '\t');
+    let pane = it.next()?.trim().to_string();
+    if !pane.starts_with('%') {
+        return None;
+    }
+    let client = it.next().unwrap_or_default().trim().to_string();
+    let flags = it.next().unwrap_or_default();
+    Some(ClientView {
+        focused: flags.split(',').any(|f| f.trim() == "focused"),
+        pane,
+        client,
+    })
+}
+
+/// `true` when any client on the server reports tmux's `focused` flag.
+///
+/// When nothing does, this server has no focus information at all — the
+/// terminal never sends focus-in — and the rule has to fall back.
+pub fn any_focus_info(views: &[ClientView]) -> bool {
+    views.iter().any(|c| c.focused)
+}
+
+/// The clients showing one pane.
+pub fn viewers_of(views: &[ClientView], pane: &str) -> Vec<Viewer> {
+    views
+        .iter()
+        .filter(|c| c.pane == pane)
+        .map(|c| Viewer {
+            client: c.client.clone(),
+            focused: c.focused,
+        })
+        .collect()
+}
+
+/// **The seen rule.** A pane is seen when a *focused* client is showing it.
+///
+/// `any_focus_info` says whether the server knows about focus at all. When no
+/// client anywhere carries the flag — a terminal that does not report focus,
+/// or a client attached from a pty — the flag carries no information, and any
+/// viewer counts. Otherwise an unfocused viewer does not: the user has that
+/// pane on screen but is looking at their browser.
+pub fn pane_is_seen(viewers: &[Viewer], any_focus_info: bool) -> bool {
+    if viewers.iter().any(|v| v.focused) {
+        return true;
+    }
+    !any_focus_info && !viewers.is_empty()
+}
 
 pub fn parse_pane_line(line: &str) -> Option<LivePane> {
     // Eight fixed fields, then the window name as the remainder.
@@ -527,6 +596,66 @@ mod tests {
         };
         assert!(t.pane_exists("%3"));
         assert!(!t.pane_exists("%4"));
+    }
+
+    fn v(focused: bool) -> Viewer {
+        Viewer {
+            client: "c".into(),
+            focused,
+        }
+    }
+
+    /// The seen rule, all four cases.
+    #[test]
+    fn a_pane_is_seen_when_a_focused_client_is_showing_it() {
+        // A focused viewer: seen, whatever else is attached.
+        assert!(pane_is_seen(&[v(true)], true));
+        assert!(pane_is_seen(&[v(false), v(true)], true));
+        // An unfocused viewer while the server does know about focus: the pane
+        // is on screen but the user is in their browser. Not seen.
+        assert!(!pane_is_seen(&[v(false)], true));
+        // No client anywhere reports focus: the flag says nothing, so any
+        // viewer counts.
+        assert!(pane_is_seen(&[v(false)], false));
+        // Nobody is showing it at all.
+        assert!(!pane_is_seen(&[], false));
+        assert!(!pane_is_seen(&[], true));
+    }
+
+    #[test]
+    fn client_lines_carry_the_pane_the_client_shows() {
+        let a = parse_client_line("%3\t/dev/ttys001\tattached,focused,UTF-8").unwrap();
+        assert_eq!(
+            (a.pane.as_str(), a.client.as_str(), a.focused),
+            ("%3", "/dev/ttys001", true)
+        );
+        let b = parse_client_line("%4\t/dev/ttys002\tattached,UTF-8").unwrap();
+        assert!(!b.focused);
+        assert!(parse_client_line("").is_none());
+        assert!(parse_client_line("nope\tx\ty").is_none());
+
+        let views = vec![a, b];
+        assert!(any_focus_info(&views));
+        assert_eq!(viewers_of(&views, "%3").len(), 1);
+        assert!(viewers_of(&views, "%9").is_empty());
+    }
+
+    #[test]
+    fn fake_viewers_stand_in_for_list_clients() {
+        std::env::set_var("PERCH_FAKE_VIEWERS", "%1:focused,%2");
+        let t = NullTmux::empty();
+        assert!(t.pane_seen_now("%1"));
+        assert!(
+            !t.pane_seen_now("%2"),
+            "a real focus flag exists, %2 has none"
+        );
+        assert!(!t.pane_seen_now("%3"));
+        std::env::set_var("PERCH_FAKE_VIEWERS", "%2");
+        assert!(
+            NullTmux::empty().pane_seen_now("%2"),
+            "no focus info anywhere"
+        );
+        std::env::remove_var("PERCH_FAKE_VIEWERS");
     }
 
     #[test]

@@ -194,9 +194,10 @@ a second vocabulary, and makes `done` mean something a glance can trust.
 tool call; the reducer returns immediately unless the pane is `needs_input`.
 Deciding a `Stop` costs one blocking `tmux display -p`. Seen-tracking rides on
 tmux's `after-select-window`, `after-select-pane` and `client-session-changed`
-hooks in indexed slots; `pane-focus-in` registers but never fires on tmux 3.6,
-so a pane you switch to by other means reads `done` until a reader or `perch
-next` looks at it.
+hooks in indexed slots.
+
+**Superseded in part by entry 13**, which replaces the `111` probe and makes
+seen a property of the live client list instead of a hook side-effect.
 
 **Revisit if** the `PreToolUse` cost shows up in practice, or a harness starts
 reporting "the dialog is gone" directly.
@@ -281,3 +282,50 @@ toast test` is gone, as is the macOS notification banner.
 
 **Revisit if** users on muted machines ask for a visual cue — which should then
 be opt-in, and should not take the keyboard.
+
+## 13. Seen is evaluated from live clients on every read; hooks only make it immediate — 2026-09-05
+
+**Decision.** Whether a pane has been seen is a question asked of tmux, not a
+flag a hook sets. One `list-clients -F '#{pane_id}\t#{client_name}\t#{client_flags}'`
+is the whole input, and `tmux::pane_is_seen` is the whole rule: a pane is seen
+when a *focused* client is showing it, or — when no client on the server
+carries the `focused` flag at all, so the flag carries no information — when
+any client is showing it. `hook::run` applies it once on a `Stop` (replacing
+the `#{pane_active}#{window_active}#{session_attached}` == `111` probe) and
+`store::snapshot` applies it on every read, flipping any `done` record whose
+pane is now seen to `idle` and writing it through. The tmux hooks stay, now
+pointed at an argument-less `perch seen`, and are demoted to an optimisation.
+
+**Why.** The old design could only learn about a switch it was told about, and
+tmux told it about three: `after-select-window`, `after-select-pane` and
+`client-session-changed`. Every other way a user changes what is on screen —
+`prefix n`, `prefix p`, `prefix l`, `last-pane`, a sessionx picker, clicking a
+window — fires none of them, so panes the user had been staring at for minutes
+kept claiming `done`. That is a direct attack on the one thing the board is
+for. Making it a derived property means there is no event to miss: correctness
+no longer depends on a hook installation the user may not have, on a tmux
+version, or on a hook name existing. Adding focus to the rule fixes the other
+half — the `111` probe called a pane seen while the user was in a browser.
+
+The rule is herdr's, and only the rule: herdr's state authority for Claude is
+screen-manifest scraping of the bottom of the pane buffer, which perch will not
+do (Invariant 3). Hooks remain the authority for `working` / `done` /
+`needs_input` because harness events are deterministic and pane text is not.
+Seen is the one thing no harness can report, so it is the one thing worth
+deriving from tmux.
+
+**Cost.** Every read that finds at least one `done` record pays one extra
+`list-clients` (a board with nothing finished pays nothing). A pane can now
+change state without any event, which means `since` moves on a read — age
+means "time in this state", which is still true, but the mover is a reader.
+`perch seen`'s signature changed, and `PERCH_FAKE_CLIENTS` /
+`PERCH_FAKE_PANE_FOCUSED` are replaced by `PERCH_FAKE_VIEWERS`.
+
+tmux 3.6a has no `after-next-window`, `after-previous-window`,
+`after-last-window`, `after-last-pane` or `after-switch-client` — all five were
+tried and all five error, which would break the whole snippet at source time.
+The state-change hooks `window-pane-changed` and `session-window-changed` cover
+those commands instead, and `client-focus-in` covers returning to the terminal.
+
+**Revisit if** `list-clients` shows up in a profile of the TUI refresh, at
+which point the reconciliation should be rate-limited rather than removed.

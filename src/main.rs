@@ -70,8 +70,9 @@ enum Cmd {
         #[arg(long)]
         client: Option<String>,
     },
-    /// Mark a pane as seen: `done` becomes `idle` and its flag clears.
-    Seen { pane: String },
+    /// Mark seen panes idle. With no argument, every `done` pane a focused
+    /// client is showing; with one, that pane unconditionally.
+    Seen { pane: Option<String> },
     /// The dashboard (run inside `tmux display-popup`; see `perch open`).
     Tui {
         /// The client Enter moves. `display-popup` cannot expand `#{…}`, so
@@ -168,7 +169,14 @@ fn dispatch(cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Next { client } => cmd_next(client.as_deref()),
         Cmd::Seen { pane } => {
-            hook::seen(&pane);
+            match pane {
+                Some(p) => {
+                    hook::seen(&p);
+                }
+                None => {
+                    hook::seen_all();
+                }
+            }
             Ok(())
         }
         Cmd::Tui { client } => {

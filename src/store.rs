@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 
 use crate::model::{PaneRecord, State};
-use crate::tmux::{LivePane, Tmux};
+use crate::tmux::{self, LivePane, Tmux};
 
 const EVENTS_MAX_BYTES: u64 = 5 * 1024 * 1024;
 /// Records whose pane is gone are pruned once they are this old.
@@ -112,7 +112,16 @@ pub fn snapshot(tmux: &dyn Tmux) -> Vec<PaneRecord> {
 pub fn snapshot_with_live(tmux: &dyn Tmux) -> (Vec<PaneRecord>, Vec<LivePane>) {
     let panes = tmux.list_panes();
     let live: Vec<String> = panes.iter().map(|p| p.pane.clone()).collect();
-    let before = load_all();
+    let mut before = load_all();
+    // Seen is a property of the live client list, not a hook side-effect: a
+    // `done` pane a focused client is now showing is `idle`, however the user
+    // got there. Costs one `list-clients`, and only when something is `done`.
+    mark_seen(tmux, &before);
+    for rec in &mut before {
+        if let Some(fresh) = load(&rec.pane) {
+            *rec = fresh;
+        }
+    }
     let states_before: Vec<(String, State)> =
         before.iter().map(|r| (r.pane.clone(), r.state)).collect();
     let after = reconcile(before, &live, Utc::now());
@@ -128,6 +137,46 @@ pub fn snapshot_with_live(tmux: &dyn Tmux) -> (Vec<PaneRecord>, Vec<LivePane>) {
         }
     }
     (after, panes)
+}
+
+/// Flip every `done` record whose pane a focused client is showing to `idle`.
+///
+/// The seen rule lives in `tmux::pane_is_seen`; this is the part that writes.
+/// Returns how many records moved. Nothing is asked of tmux unless at least
+/// one record is `done`, so a board with nothing finished pays nothing.
+pub fn mark_seen(t: &dyn Tmux, records: &[PaneRecord]) -> usize {
+    if !records.iter().any(|r| r.state == State::Done) {
+        return 0;
+    }
+    let views = t.client_views();
+    let any_focus = tmux::any_focus_info(&views);
+    let now = now_rfc3339();
+    let mut cmds: Vec<Vec<String>> = Vec::new();
+    for rec in records {
+        if rec.state != State::Done {
+            continue;
+        }
+        if !tmux::pane_is_seen(&tmux::viewers_of(&views, &rec.pane), any_focus) {
+            continue;
+        }
+        let mut rec = rec.clone();
+        rec.state = State::Idle;
+        rec.since = now.clone();
+        if save(&rec).is_err() {
+            continue;
+        }
+        cmds.push(vec![
+            "set-option".into(),
+            "-p".into(),
+            "-t".into(),
+            rec.pane.clone(),
+            "@perch_state".into(),
+            "idle".into(),
+        ]);
+    }
+    // One tmux invocation for the whole batch, whatever it flipped.
+    t.batch(&cmds);
+    cmds.len()
 }
 
 /// Pure part of [`snapshot`], so liveness is testable with an injected pane list.

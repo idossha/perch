@@ -92,7 +92,8 @@ fn done_means_finished_while_you_were_elsewhere() {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         if focused {
-            cmd.env("PERCH_FAKE_PANE_FOCUSED", "1");
+            // One client, showing this pane, with tmux's focus flag.
+            cmd.env("PERCH_FAKE_VIEWERS", "%999:focused");
         }
         let mut child = cmd.spawn().unwrap();
         child

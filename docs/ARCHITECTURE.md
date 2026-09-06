@@ -54,15 +54,76 @@ from:
 - **`idle`** — ready for input, and seen.
 
 **`done` means finished while you were elsewhere; `idle` means you have seen
-it.** So a `Stop` for the pane you are actually watching (tmux
-`display -p -t <pane> '#{pane_active}#{window_active}#{session_attached}'` is
-`111`) goes to `idle` and stays silent, while every other `Stop` is `done` and
-chimes. `needs_input` always sounds.
+it.** A `Stop` on a seen pane goes to `idle` and stays silent; every other
+`Stop` is `done` and chimes. `needs_input` always sounds.
 
-`perch seen <pane>` performs the other half: `done` becomes `idle` and the
-window flag clears; anything else is a no-op. The tmux snippet wires it to
-the tmux `after-select-window`, `after-select-pane` and `client-session-changed` hooks, and `perch next` and the TUI's jump
-call the same code for the pane they move you to.
+## Seen
+
+Seen is a **property of the live client list**, evaluated on every read — not a
+side effect of a hook firing. One tmux call is the whole input:
+
+```
+tmux list-clients -F '#{pane_id}\t#{client_name}\t#{client_flags}'
+```
+
+`#{pane_id}` on a client is the pane that client's screen is showing. A client
+whose `#{client_flags}` contains `focused` has keyboard focus on the terminal
+window itself, which is why `set -g focus-events on` is part of the snippet.
+The rule (`tmux::pane_is_seen`) is:
+
+> A pane is **seen** when a focused client is showing it. If **no client on the
+> server carries the focused flag at all**, the flag carries no information —
+> the terminal never reports focus — and any client showing the pane counts.
+
+The fallback is what keeps the rule honest on terminals without focus
+reporting; without it every pane would read unseen forever there. With focus
+information present, a pane on an unfocused client's screen is *not* seen: it
+is on screen while the user is in their browser.
+
+Two places apply it:
+
+- **`hook::run`, on a `Stop` only.** One `list-clients`; no other event pays
+  for it. This is what decides `idle` vs `done` in the first place.
+- **`store::mark_seen`, from `store::snapshot`** — so every read (the TUI
+  refresh, `perch list`, `perch status`, `perch next`) flips any `Done` record
+  whose pane is now seen to `Idle`, writes it through, and sets `@perch_state`
+  for all of them in one `tmux` invocation. Nothing is asked of tmux unless at
+  least one record is `done`.
+
+That second one is the safety net that makes the tmux hooks **optional**. They
+only make the transition immediate:
+
+```
+set-hook -g 'after-select-window[42]'    "run-shell -b 'perch seen'"
+set-hook -g 'after-select-pane[42]'      "run-shell -b 'perch seen'"
+set-hook -g 'client-session-changed[42]' "run-shell -b 'perch seen'"
+set-hook -g 'window-pane-changed[42]'    "run-shell -b 'perch seen'"
+set-hook -g 'session-window-changed[42]' "run-shell -b 'perch seen'"
+set-hook -g 'client-focus-in[42]'        "run-shell -b 'perch seen'"
+```
+
+`perch seen` with no argument runs the reconciliation over every `done` record,
+so it does not matter which hook fired or what pane it names.
+`window-pane-changed` and `session-window-changed` are state-change hooks, so
+unlike the `after-<command>` hooks they fire for `next-window`,
+`previous-window`, `last-window`, `last-pane` and `switch-client` too — which
+is the whole reason a pane you were looking at used to keep saying `done`.
+tmux 3.6a has no `after-next-window`, `after-previous-window`,
+`after-last-window`, `after-last-pane` or `after-switch-client` option; a wrong
+name errors at source time and takes the rest of the snippet with it.
+
+`perch seen <pane>` still marks one named pane seen unconditionally — `perch
+next` and the TUI's jump use it for the pane they just moved you to, where the
+move itself is the evidence.
+
+### Compared with herdr
+
+herdr derives Claude's state by scraping the bottom of the pane buffer (a
+screen manifest). perch does not: hooks are the authority for `working`,
+`done` and `needs_input`, because a harness event is deterministic and pane
+text is not (Invariant 3, no scraping). What perch takes from herdr is the
+*seen/unseen* rule, which is not something a harness can report at all —
+expressed here through tmux client focus rather than through a scraper.
 
 A `needs_input` that you answered where perch could not see it — in the pane
 itself — clears on the next proof that the agent is running: a `PreToolUse`
@@ -168,7 +229,7 @@ moment the TUI returns, and its pty takes any un-waited child with it. Before
 jumping, the pane is confirmed present in `list-panes`. If it is gone, or tmux
 returns non-zero, the dashboard shows an inline error line — `pane %N is gone` —
 and refreshes **instead of exiting**. Only a successful jump closes the popup,
-and then `perch seen` runs on the destination pane.
+and then `perch seen <pane>` runs on the destination pane.
 
 **Selection is keyed by identity, never by row index.** `App::selected` is an
 `Option<Selection { pane, child }>`; the row index is derived at render time.
@@ -290,7 +351,7 @@ command can be neutered without config.
 | `PERCH_NO_SOUND=1` | never spawn `afplay` or `osascript` |
 | `PERCH_NO_TMUX=1` | use `NullTmux` (empty pane list, no tmux writes) |
 | `PERCH_TMUX_LOG` | with `PERCH_NO_TMUX`, record each tmux invocation to a file |
-| `PERCH_FAKE_CLIENTS` | with `PERCH_NO_TMUX`, the client list the cue uses |
+| `PERCH_FAKE_VIEWERS` | with `PERCH_NO_TMUX`, the client list the seen rule reads: `%1:focused,%2` |
 | `PERCH_FAKE_JUMP_FAIL=1` | with `PERCH_NO_TMUX`, every checked tmux call reports failure |
 | `PERCH_DEBUG=1` | log each jump's exact tmux argv to stderr |
 | `PERCH_HOME` | home directory detection and every default path resolve against |
