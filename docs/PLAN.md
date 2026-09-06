@@ -1,5 +1,9 @@
 # perch — plan (2026-09-05)
 
+> Historical. This is the plan the first build followed; the living description
+> is `ARCHITECTURE.md`, the reasoning is `DECISIONS.md`, and the principles are
+> `PHILOSOPHY.md`. Where this file and those disagree, they win.
+
 A thin, daemonless, tmux-native home base for coding agents. Rust. Claude Code first;
 Codex and pi through the same event schema. It never owns sessions, panes or worktrees:
 it observes what already runs in the user's tmux and gives it a visual and auditory surface.

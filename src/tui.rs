@@ -948,17 +948,28 @@ pub const HELP_SECTIONS: [(&str, &[(&str, &str)]); 3] = [
     ),
 ];
 
-/// One line per state: glyph, name and what it actually means.
-pub const HELP_LEGEND: [(State, &str); 5] = [
-    (State::Working, "a turn is in progress"),
+/// One line per state: the state whose glyph and colour to use, the word
+/// shown, and what it actually means. `delegating` is `working` in effect,
+/// so it borrows that row's look.
+pub const HELP_LEGEND: [(State, &str, &str); 6] = [
+    (State::Working, "working", "a turn is in progress"),
+    (
+        State::Working,
+        "delegating",
+        "its turn ended, but subagents it started still run",
+    ),
     (
         State::NeedsInput,
+        "needs_input",
         "a real permission or question is blocking the agent",
     ),
-    (State::Done, "finished while you were elsewhere"),
-    (State::Idle, "finished and seen"),
-    (State::Ended, "the pane or session is gone"),
+    (State::Done, "done", "finished while you were elsewhere"),
+    (State::Idle, "idle", "finished and seen"),
+    (State::Ended, "ended", "the pane or session is gone"),
 ];
+
+/// The one line that explains the harness-column badge.
+pub const HELP_BADGE: &str = "⚑n ▶n ✓n after the harness: subagents blocked / running / finished";
 
 /// Centre a `w` x `h` box inside `area`, shrinking to fit.
 fn centered(area: ratatui::layout::Rect, w: u16, h: u16) -> ratatui::layout::Rect {
@@ -1010,15 +1021,16 @@ fn help_overlay(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled("States", title)));
-    for (state, meaning) in HELP_LEGEND {
+    for (state, word, meaning) in HELP_LEGEND {
         lines.push(Line::from(vec![
             Span::styled(
-                format!(" {} {:<12}", state_glyph(state, 0), state.as_str()),
+                format!(" {} {:<12}", state_glyph(state, 0), word),
                 t.state_style(state),
             ),
             Span::styled(meaning.to_string(), dim),
         ]));
     }
+    lines.push(Line::from(Span::styled(format!(" {HELP_BADGE}"), dim)));
 
     let rect = centered(area, (HELP_COL * 3 + 2) as u16, lines.len() as u16 + 2);
     f.render_widget(ratatui::widgets::Clear, rect);
