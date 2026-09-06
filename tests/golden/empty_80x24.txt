@@ -1,0 +1,24 @@
+┌perch─────────────────────────────────────────────────────────────────────────┐
+│  location  harness   state          age last message                         │
+│  no agents yet — start claude/codex/pi in a tmux pane                        │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+Enter jump   n next   ? help   q quit               [sound on] [grouped] 0 panes

@@ -1,0 +1,24 @@
+┌perch─────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│  location  project             harness       state          age last message                                         │
+│▌ perch     perch               claude        ▶ working      12s editing src/tui.rs                                   │
+│  luna      luna                claude ⚑1     ⚑ needs_input  45s permission_prompt                                    │
+│  └ Explore                                   ⚑ needs_input  20s write to src/main.rs?                                │
+│  duet      duet                claude ▶1 ✓2  ▶ delegating    2m handed off to 2 agents                               │
+│  └ Explore                                   ▶ working       1m reading tests                                        │
+│  review    luna                claude        ✓ done          5m wrote the reducer and its tests                      │
+│  docs      perch               claude        · idle         30m                                                      │
+│  1 ended, press e to show                                                                                            │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+Enter jump   n next   ? help   q quit                                                          [sound on] [flat] 6 panes

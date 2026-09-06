@@ -142,6 +142,53 @@ Ubuntu half is the one that matters.) Note that the workflow sets
 `PERCH_NO_TMUX: "1"` at the top level for the unit suite — the harness strips it
 from every perch child, so no change is needed there.
 
+## Golden snapshots
+
+`tests/golden.rs` renders one fixture board through ratatui's `TestBackend` at
+120x24 and 80x24 with a fixed clock (`2026-01-01T12:00:00Z`, every `since` an
+exact offset from it) and compares the text **verbatim** with
+`tests/golden/*.txt`. `perch::tui::render_to_string(app, w, h, now)` is the only
+production helper this needs; it is the same `render` the dashboard runs, drawn
+into a buffer instead of a terminal.
+
+What is pinned, and why a `contains` assertion would not do: column widths and
+their adaptivity, row order, the group headers and their counts, the subagent
+badge, the child rows, the footer, the help overlay's frame, and the fact that
+none of it moves when only a colour changes.
+
+| golden | what it holds |
+| --- | --- |
+| `grouped_120x24.txt` | the default board: needs_input (with a blocked child), done, working, idle, delegating, one ended hidden behind the note |
+| `grouped_80x24.txt` | the same board squeezed to 80 columns |
+| `flat_120x24.txt` | `v`: flat, newest first, with the project column back |
+| `expanded_120x24.txt` | `Space`: the delegating pane's finished children unfolded, newest first |
+| `ended_120x24.txt` | `e`: the ended row shown |
+| `help_120x24.txt` | the help overlay over the board |
+| `empty_80x24.txt` | the empty state |
+| `light_120x24.txt` | the light theme (same layout, different colours — the text must not move) |
+| `gone_pane_120x24.txt` | the inline `pane %9 is gone` error line |
+| `debug_ids_120x24.txt` | `PERCH_DEBUG=1`: pane ids beside the location |
+| `e2e_dashboard_120x40.txt` | the real binary, in a real 120x40 tmux pane, read back with `capture-pane` (`tests/e2e_tui_render.rs`) |
+
+**Policy.** Comparison is verbatim, and re-blessing is never a passing run:
+
+```sh
+UPDATE_GOLDENS=1 cargo test --test golden      # rewrites the files, then FAILS
+git diff tests/golden                          # read the diff — this is the review
+cargo test --test golden                       # green only once the new text is right
+```
+
+Every golden test writes its file and then panics with "goldens were rewritten",
+so a CI job that somehow ran with `UPDATE_GOLDENS=1` still goes red. A changed
+golden is a diff to read, not a file to regenerate on the way past.
+
+The real-terminal golden is normalised in exactly one way: the digits of the age
+column are masked (`3h` → `Nh`), keeping the token's width so the columns must
+still line up. Its `since` values are three and four hours in the past, so the
+mask is a belt, not the mechanism. `PERCH_NO_PATH_PROBE=1` keeps the setup
+banner out of it, since a harness on the developer's `PATH` is not a fact about
+perch.
+
 ## Coverage: every documented rule and the test that would fail without it
 
 The rules are the ones stated in `docs/ARCHITECTURE.md` and `docs/DECISIONS.md`
