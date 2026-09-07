@@ -76,6 +76,9 @@ pub fn parse(raw: &serde_json::Value) -> anyhow::Result<Option<ParsedEvent>> {
         session_id: first_str(raw, SESSION_KEYS),
         cwd: first_str(raw, &["cwd"]),
         agent_id,
+        // Codex puts the active model slug on every payload.
+        model: first_str(raw, &["model"]),
+        effort: first_str(raw, &["reasoning_effort", "effort"]),
     }))
 }
 

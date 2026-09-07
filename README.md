@@ -150,6 +150,14 @@ Each row's first column is where the pane is in tmux — the window name, with
 `session/` in front when more than one session is on the board and `.N` after
 it when the window is split — not its `%id`, which perch uses internally and
 shows only in `perch list --json` and under `PERCH_DEBUG=1`.
+A `model` column appears as soon as a harness reports its model — `opus 5
+high`, `fable 5.1 max`, `gpt 5.6 sol` — showing the short model label and,
+where the harness reports one, the effort or thinking level; a context-window
+variant such as `claude-opus-5[1m]` shows as plain `opus 5`. Claude reports
+its model on session start and on every `/model` switch, and its effort on
+every turn; Codex reports the model slug on every hook; pi's extension reports
+its model and thinking level. Nothing is ever read from a config file: a pane
+whose harness has said nothing shows nothing there.
 Rows are grouped by project, the groups ordered by urgency, and each state has
 a glyph as well as a colour so the board reads without colour: `⚑` needs_input,
 `✓` done, `▶` working, `…` starting, `·` idle, `✕` ended. Ended panes are

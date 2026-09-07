@@ -295,6 +295,12 @@ pub struct ParsedEvent {
     /// Set when the harness attributed the event to a subagent of the session;
     /// the reducer then folds it into the parent record's `children`.
     pub agent_id: Option<String>,
+    /// The active model id, when the payload carries one (Claude's
+    /// `SessionStart.model` and `PostModelSwitch.to_model`, Codex's `model`,
+    /// pi's extension). Never inferred from configuration.
+    pub model: Option<String>,
+    /// The effort or thinking level in force, when the payload carries one.
+    pub effort: Option<String>,
 }
 
 impl ParsedEvent {
@@ -305,8 +311,44 @@ impl ParsedEvent {
             session_id,
             cwd,
             agent_id: None,
+            model: None,
+            effort: None,
         }
     }
+}
+
+/// The short label the board shows for a model id: the provider prefix and a
+/// leading `claude` dropped, version numbers joined with dots, an eight-digit
+/// date dropped, a bracketed variant such as `[1m]` dropped. `claude-fable-5-1`
+/// → `fable 5.1`; `claude-opus-5[1m]` → `opus 5`; `gpt-5.6-sol` → `gpt 5.6
+/// sol`; an id with no structure is shown as is.
+pub fn model_label(id: &str) -> String {
+    let id = id.rsplit('/').next().unwrap_or(id);
+    // `claude-opus-5[1m]` is the 1M-context variant: the size is not the
+    // model, and the board does not want it.
+    let id = id.split(['[', '(']).next().unwrap_or(id).trim();
+    let mut tokens: Vec<&str> = id.split('-').filter(|t| !t.is_empty()).collect();
+    if tokens.len() > 1 && tokens[0].eq_ignore_ascii_case("claude") {
+        tokens.remove(0);
+    }
+    tokens.retain(|t| !(t.len() == 8 && t.chars().all(|c| c.is_ascii_digit())));
+    let is_num = |t: &str| !t.is_empty() && t.chars().all(|c| c.is_ascii_digit() || c == '.');
+    let mut out = String::new();
+    let mut prev_num = false;
+    for t in tokens {
+        let num = is_num(t);
+        if out.is_empty() {
+            out.push_str(t);
+        } else if num && prev_num {
+            out.push('.');
+            out.push_str(t);
+        } else {
+            out.push(' ');
+            out.push_str(t);
+        }
+        prev_num = num;
+    }
+    out
 }
 
 /// The persisted per-pane record.
@@ -351,6 +393,12 @@ pub struct PaneRecord {
     /// `PermissionRequest` for the dialog) is handed back too.
     #[serde(default)]
     pub deferred_question: Option<String>,
+    /// The active model id, as the harness last reported it.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// The effort or thinking level, as the harness last reported it.
+    #[serde(default)]
+    pub effort: Option<String>,
 }
 
 /// One subagent under a pane. `id` is the harness's agent id; `agent_type` is its
@@ -414,7 +462,22 @@ impl PaneRecord {
             children: Vec::new(),
             question: None,
             deferred_question: None,
+            model: None,
+            effort: None,
         }
+    }
+
+    /// `opus 5 high`: the model label and, when known, the effort level.
+    /// Empty when the harness has said nothing about either.
+    pub fn model_cell(&self) -> String {
+        let mut out = self.model.as_deref().map(model_label).unwrap_or_default();
+        if let Some(e) = self.effort.as_deref().filter(|e| !e.is_empty()) {
+            if !out.is_empty() {
+                out.push(' ');
+            }
+            out.push_str(e);
+        }
+        out
     }
 
     /// The question a popup can still answer: pending, and the hook that

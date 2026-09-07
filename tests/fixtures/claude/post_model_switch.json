@@ -1,0 +1,1 @@
+{"session_id":"s-1","transcript_path":"/tmp/t.jsonl","cwd":"/Users/x/00_development/perch","hook_event_name":"PostModelSwitch","from_model":"claude-opus-5","to_model":"claude-fable-5-1","requested_model":"fable","source":"command"}

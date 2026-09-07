@@ -138,3 +138,17 @@ fn the_pi_tool_asks_for_one_call_per_set_and_numbers_the_fallback() {
         "{src}"
     );
 }
+
+/// The extension reports pi's model id and thinking level when it knows them.
+#[test]
+fn model_and_effort_come_from_the_extension_payload() {
+    let p = parse("session_start_with_model.json").unwrap();
+    assert_eq!(p.model.as_deref(), Some("anthropic/claude-sonnet-5"));
+    assert_eq!(p.effort.as_deref(), Some("medium"));
+    assert_eq!(parse("session_start.json").unwrap().model, None);
+    let src = perch::adapters::PI_EXTENSION;
+    assert!(
+        src.contains("model:") && src.contains("ctx?.model?.id"),
+        "{src}"
+    );
+}

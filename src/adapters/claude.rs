@@ -86,16 +86,36 @@ pub fn parse(raw: &serde_json::Value) -> anyhow::Result<Option<ParsedEvent>> {
                 None => Event::ToolUse,
             },
         },
+        // The session's model changed: no state moves, but the record learns
+        // the new model from `to_model`.
+        "PostModelSwitch" if agent_id.is_none() => Event::Observed {
+            label: "model_switch".to_string(),
+        },
         // PreCompact and friends are noise for the dashboard; so is a
         // session-level event attributed to a subagent.
         _ => return Ok(None),
     };
+
+    // `model` is on `SessionStart` (when Claude includes it) and `to_model`
+    // on a switch; `effort.level` rides on any hook inside a turn.
+    let model = match name {
+        "PostModelSwitch" => str_field(raw, "to_model"),
+        _ => str_field(raw, "model"),
+    };
+    let effort = raw
+        .get("effort")
+        .and_then(|e| e.get("level"))
+        .and_then(|l| l.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
 
     Ok(Some(ParsedEvent {
         event,
         session_id: str_field(raw, "session_id"),
         cwd: str_field(raw, "cwd"),
         agent_id,
+        model,
+        effort,
     }))
 }
 

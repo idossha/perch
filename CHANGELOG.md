@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-07
+
+### Added
+
+- **A `model` column on the board** — `opus 5 high`, `fable 5.1 max`,
+  `gpt 5.6 sol` — with the short model label and, where the harness reports
+  it, the effort or thinking level; the popup title and the card carry it too.
+  Claude reports its model on session start and on every `/model` switch (a
+  `PostModelSwitch` hook is now installed) and its effort on every turn; Codex
+  reports the model slug on every hook; pi's extension reports its model and
+  thinking level. A context-window variant (`claude-opus-5[1m]`) shows as the
+  plain model. Nothing is read from a config file: a pane whose harness has
+  said nothing shows nothing. `perch list --json` gains `model` and `effort`.
+  Run `perch setup` once to add the new hook.
+
 ## [0.4.0] - 2026-09-07
 
 ### Added
@@ -290,5 +305,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Sound and desktop notifications are macOS-only.
 - Nothing is tracked outside tmux: with no `$TMUX_PANE`, the hook is a no-op.
 
-[Unreleased]: https://github.com/idossha/perch/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/idossha/perch/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/idossha/perch/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/idossha/perch/compare/v0.3.0...v0.4.0

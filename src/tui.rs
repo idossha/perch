@@ -841,6 +841,22 @@ impl App {
         w.max(W_HARNESS - 2) + 2
     }
 
+    /// Width of the model column: the widest label plus a gap, and nothing
+    /// at all when no pane has reported a model.
+    fn model_width(&self) -> usize {
+        let w = self
+            .records
+            .iter()
+            .map(|r| r.model_cell().chars().count())
+            .max()
+            .unwrap_or(0);
+        if w == 0 {
+            0
+        } else {
+            w.min(W_MODEL_MAX) + 2
+        }
+    }
+
     /// Width of the location column: the widest one, capped so a long window
     /// name cannot eat the message.
     fn location_width(&self) -> usize {
@@ -896,7 +912,7 @@ fn save_prefs(app: &App) {
 // ---------------------------------------------------------------- render
 
 /// The cells of one pane row, in column order. Kept for `perch status`.
-pub fn row_cells(rec: &PaneRecord, now: DateTime<Utc>) -> [String; 6] {
+pub fn row_cells(rec: &PaneRecord, now: DateTime<Utc>) -> [String; 7] {
     let project = match (&rec.project, &rec.branch) {
         (Some(p), Some(b)) => format!("{p} ({b})"),
         (Some(p), None) => p.clone(),
@@ -906,6 +922,7 @@ pub fn row_cells(rec: &PaneRecord, now: DateTime<Utc>) -> [String; 6] {
         rec.pane.clone(),
         project,
         rec.harness.as_str().to_string(),
+        rec.model_cell(),
         state_word(rec).to_string(),
         store::fmt_age(store::age_secs(&rec.since, now)),
         rec.last_message.clone().unwrap_or_default(),
@@ -918,6 +935,7 @@ const W_LOC_MIN: usize = 8;
 const W_LOC_MAX: usize = 24;
 const W_PROJECT: usize = 20;
 const W_HARNESS: usize = 10;
+const W_MODEL_MAX: usize = 22;
 const W_STATE: usize = 13;
 const W_AGE: usize = 5;
 
@@ -1058,16 +1076,18 @@ struct Cols {
     loc: usize,
     project: usize,
     harness: usize,
+    model: usize,
     msg: usize,
 }
 
 fn header_line(theme: &Theme, c: Cols) -> Line<'static> {
     let dim = Style::default().fg(theme.dim).add_modifier(Modifier::DIM);
     let text = format!(
-        "  {}{}{}{}{:>aw$} {}",
+        "  {}{}{}{}{}{:>aw$} {}",
         fit("location", c.loc),
         fit("project", c.project),
         fit("harness", c.harness),
+        fit("model", c.model),
         fit("state", W_STATE),
         "age",
         fit("last message", c.msg),
@@ -1109,6 +1129,7 @@ fn pane_line(app: &App, i: usize, selected: bool, now: DateTime<Utc>, c: Cols) -
     }
     spans.extend(badge_spans(t, rec, c.harness));
     spans.extend([
+        Span::styled(fit(&rec.model_cell(), c.model), Style::default().fg(t.dim)),
         Span::styled(fit(&state_txt, W_STATE), t.state_style(shown)),
         Span::styled(
             format!(
@@ -1544,7 +1565,12 @@ fn form_box(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                 (Some(p), _) => p.clone(),
                 _ => project_of(rec),
             }];
-            parts.push(rec.harness.as_str().to_string());
+            let model = rec.model_cell();
+            parts.push(if model.is_empty() {
+                rec.harness.as_str().to_string()
+            } else {
+                format!("{} {model}", rec.harness.as_str())
+            });
             if let Some(loc) = rec.location.as_ref().filter(|l| !l.is_empty()) {
                 parts.push(loc.clone());
             }
@@ -1625,11 +1651,13 @@ pub fn render(f: &mut Frame, app: &App, now: DateTime<Utc>) {
     // project on every row says nothing; flat rows still need it.
     let project_w = if app.grouped { 0 } else { W_PROJECT };
     let harness_w = app.harness_width();
-    let fixed = 2 + loc_w + project_w + harness_w + W_STATE + W_AGE + 1;
+    let model_w = app.model_width();
+    let fixed = 2 + loc_w + project_w + harness_w + model_w + W_STATE + W_AGE + 1;
     let cols = Cols {
         loc: loc_w,
         project: project_w,
         harness: harness_w,
+        model: model_w,
         msg: inner_w.saturating_sub(fixed).max(1),
     };
 
@@ -1659,7 +1687,7 @@ pub fn render(f: &mut Frame, app: &App, now: DateTime<Utc>) {
                 *ci,
                 selected,
                 now,
-                cols.loc + cols.project + cols.harness,
+                cols.loc + cols.project + cols.harness + cols.model,
                 cols.msg,
             ),
             RowKind::EndedNote(k) => Line::from(Span::styled(

@@ -191,6 +191,7 @@ none of it moves when only a colour changes.
 | `light_120x24.txt` | the light theme (same layout, different colours — the text must not move) |
 | `gone_pane_120x24.txt` | the inline `pane %9 is gone` error line |
 | `debug_ids_120x24.txt` | `PERCH_DEBUG=1`: pane ids beside the location |
+| `model_column_120x24.txt` | the `model` column once panes have reported a model |
 | `e2e_dashboard_120x40.txt` | the real binary, in a real 120x40 tmux pane, read back with `capture-pane` (`tests/e2e_tui_render.rs`) |
 
 **Policy.** Comparison is verbatim, and re-blessing is never a passing run:
@@ -215,7 +216,7 @@ perch.
 ## Coverage: every documented rule and the test that would fail without it
 
 The rules are the ones stated in `docs/ARCHITECTURE.md` and `docs/DECISIONS.md`
-(entries 8–17). Each row names tests that fail if the rule is removed — not
+(entries 8–19). Each row names tests that fail if the rule is removed — not
 tests that merely execute the code.
 
 ### The reducer's event → state table
@@ -272,6 +273,16 @@ tests that merely execute the code.
 | `perch seen` reopens a live question that has no popup; never on a client dealing with another dialog | `ask_hook::argument_less_seen_reopens_the_popup_for_a_waiting_question`, `ask_hook::ask_popup_never_covers_a_client_dealing_with_another_dialog`, `e2e_ask_flow::p_goes_to_the_pane_and_the_next_question_returns_when_you_look_away` |
 | Regressions from the first live cuts: the Codex tool is read-only and registered `approve`, an `auto` entry is refreshed; the pi tool asks for one call per set; a 0.3 install is brought to 0.4 by one setup run | `mcp_server::the_tool_is_declared_read_only_and_registered_as_never_gated`, `adapter_pi::the_pi_tool_asks_for_one_call_per_set_and_numbers_the_fallback`, `install_codex_pi::a_zero_three_install_is_brought_to_zero_four_by_one_setup_run` |
 | A real Claude question is answered through the popup, alone and queued | `e2e_ask_real::a_real_claude_question_is_answered_through_the_popup`, `e2e_ask_real::two_real_claude_questions_queue_into_one_popup` |
+
+### Model and effort
+
+| rule | test(s) |
+| --- | --- |
+| Claude: `model` from `SessionStart` (when present) and `PostModelSwitch.to_model`, `effort.level` from any in-turn hook; a switch moves no state | `adapter_claude::model_and_effort_are_read_where_claude_provides_them`, `reducer_rules::model_and_effort_stick_to_the_record` |
+| Codex: the `model` slug on any payload | `adapter_codex::the_model_slug_is_read_from_any_payload` |
+| pi: `model` and `effort` from the extension's payload, which sends `ctx.model.id` | `adapter_pi::model_and_effort_come_from_the_extension_payload` |
+| Ids shorten to labels (`claude-fable-5-1` → `fable 5.1`, `gpt-5.6-sol` → `gpt 5.6 sol`, `claude-opus-5[1m]` → `opus 5`) | `reducer_rules::model_ids_become_short_labels` |
+| The board's `model` column shows label + effort, or nothing, and appears only once some pane has a model; the popup title carries it | `tui_render::the_model_column_shows_the_label_and_effort_or_nothing`, `golden::model_column_120x24`, `ask_form::the_form_title_includes_the_model_when_known` |
 
 ### Seen
 

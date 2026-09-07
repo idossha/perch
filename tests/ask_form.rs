@@ -429,3 +429,19 @@ fn the_popup_is_sized_to_its_content_and_capped_by_the_client() {
     let (w3, h3) = popup_size(&q, Some((70, 20)));
     assert!(w3 <= 66 && h3 <= 18, "{w3}x{h3}");
 }
+
+/// The popup title names the model too, when known.
+#[test]
+fn the_form_title_includes_the_model_when_known() {
+    let mut app = board(600);
+    app.records[0].model = Some("claude-opus-5".into());
+    app.records[0].effort = Some("high".into());
+    app.records[0].location = Some("api".into());
+    app.open_form();
+    let title = render_form_to_string(&app, 90, 12)
+        .lines()
+        .next()
+        .unwrap()
+        .to_string();
+    assert!(title.contains("claude opus 5 high"), "{title}");
+}

@@ -311,3 +311,29 @@ fn a_permission_request_for_ask_user_question_is_the_same_question() {
         "the same questions have the same key whichever event carried them"
     );
 }
+
+/// The model rides along where Claude gives it: on `SessionStart` (sometimes),
+/// on every `PostModelSwitch` (`to_model`), and the effort level on any hook
+/// that fires inside a turn. Missing fields stay `None`, never a guess.
+#[test]
+fn model_and_effort_are_read_where_claude_provides_them() {
+    let p = parse("session_start_with_model.json").unwrap();
+    assert_eq!(p.model.as_deref(), Some("claude-opus-5"));
+    assert_eq!(p.effort, None);
+    let p = parse("session_start.json").unwrap();
+    assert_eq!(p.model, None, "a SessionStart without a model says nothing");
+
+    let p = parse("post_model_switch.json").unwrap();
+    assert_eq!(p.model.as_deref(), Some("claude-fable-5-1"));
+    assert_eq!(
+        p.event,
+        Event::Observed {
+            label: "model_switch".into()
+        },
+        "a switch is not a state change"
+    );
+
+    let p = parse("stop_with_effort.json").unwrap();
+    assert_eq!(p.effort.as_deref(), Some("high"));
+    assert!(matches!(p.event, Event::Stop { .. }));
+}

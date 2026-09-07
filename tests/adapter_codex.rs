@@ -140,3 +140,11 @@ fn an_ask_user_payload_is_a_question() {
     assert_eq!(questions[1].header, "Harnesses");
     assert!(questions[1].multi_select);
 }
+
+/// Codex puts the active model slug on every hook payload.
+#[test]
+fn the_model_slug_is_read_from_any_payload() {
+    let p = parse("session_start_with_model.json").unwrap();
+    assert_eq!(p.model.as_deref(), Some("gpt-5.6-sol"));
+    assert_eq!(parse("session_start.json").unwrap().model, None);
+}

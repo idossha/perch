@@ -164,3 +164,51 @@ fn an_answer_puts_the_pane_back_to_work_and_is_silent() {
     assert_eq!(r.since, "t2");
     assert!(r.question.is_none());
 }
+
+/// Model and effort are copied onto the record whenever an event carries
+/// them — a model switch included, which moves no state — and kept when the
+/// next event says nothing about them.
+#[test]
+fn model_and_effort_stick_to_the_record() {
+    let mut r = rec();
+    let mut p = ev(Event::SessionStart);
+    p.model = Some("claude-opus-5".into());
+    apply_with(&mut r, &p, "t1", false);
+    assert_eq!(r.model.as_deref(), Some("claude-opus-5"));
+    assert_eq!(r.effort, None);
+
+    let mut p = ev(Event::Stop { last_message: None });
+    p.effort = Some("high".into());
+    apply_with(&mut r, &p, "t2", false);
+    assert_eq!(r.model.as_deref(), Some("claude-opus-5"), "kept");
+    assert_eq!(r.effort.as_deref(), Some("high"));
+
+    let mut p = ev(Event::Observed {
+        label: "model_switch".into(),
+    });
+    p.model = Some("claude-fable-5-1".into());
+    let out = apply_with(&mut r, &p, "t3", false);
+    assert!(!out.parent_changed, "a switch moves no state");
+    assert_eq!(r.model.as_deref(), Some("claude-fable-5-1"));
+    assert_eq!(r.since, "t2", "and no clock");
+}
+
+/// The short label the board shows for a model id.
+#[test]
+fn model_ids_become_short_labels() {
+    use perch::model::model_label;
+    assert_eq!(model_label("claude-opus-5"), "opus 5");
+    assert_eq!(
+        model_label("claude-opus-5[1m]"),
+        "opus 5",
+        "the context-window variant is not the model"
+    );
+    assert_eq!(model_label("claude-sonnet-5 (fast)"), "sonnet 5");
+    assert_eq!(model_label("claude-fable-5-1"), "fable 5.1");
+    assert_eq!(model_label("claude-haiku-4-5-20251001"), "haiku 4.5");
+    assert_eq!(model_label("claude-sonnet-5"), "sonnet 5");
+    assert_eq!(model_label("gpt-5.6-sol"), "gpt 5.6 sol");
+    assert_eq!(model_label("gpt-6-astra"), "gpt 6 astra");
+    assert_eq!(model_label("anthropic/claude-sonnet-5"), "sonnet 5");
+    assert_eq!(model_label("o3"), "o3");
+}

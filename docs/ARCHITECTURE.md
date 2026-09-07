@@ -43,7 +43,7 @@ pane's record and returns whether the state changed.
 | `NeedsInput` | `Notification` with `notification_type` in `permission_prompt`, `elicitation_dialog`, `elicitation_url_dialog`, `agent_needs_input`; codex `PermissionRequest`; codex `PreToolUse` for `request_user_input` (its question tool — detected, not answerable) | `needs_input` | `last_message` = the notification type |
 | `Completed` | `Notification` with `agent_completed` | `done` | — |
 | `ToolUse` | `PreToolUse`, or `Notification` `elicitation_complete` / `elicitation_response` | `working`, and only from `needs_input` | — |
-| `Observed` | any other `Notification` — `idle_prompt`, `auth_success`, `quota_*` | unchanged | logged only |
+| `Observed` | any other `Notification` — `idle_prompt`, `auth_success`, `quota_*`; `PostModelSwitch` (label `model_switch`) | unchanged | logged only; a switch updates `model` |
 | `Question` | `PreToolUse` for `AskUserQuestion` | `needs_input` | `last_message` = the first question; `question` = the whole set, with a deadline |
 | `SessionEnd` | `hook_event_name: SessionEnd` | `ended` | — |
 
@@ -400,7 +400,16 @@ ask.log               one line per --ask hook invocation: what perch did with ea
 ```
 
 A record is `{pane, harness, session_id, cwd, project, branch, location, state,
-since, last_message, title, pid, last_sound_ms, children}`. Unknown or missing fields
+since, last_message, title, pid, last_sound_ms, children, question,
+deferred_question, model, effort}`. `model` and `effort` are copied from any
+event that carries them — Claude's `SessionStart.model` (when present) and
+`PostModelSwitch.to_model`, `effort.level` on any hook inside a turn; Codex's
+`model` on every payload; pi's extension's `model` and `effort` — and are
+never inferred from configuration, so a pane whose harness has said nothing
+shows nothing. `model::model_label` shortens an id for the board
+(`claude-fable-5-1` → `fable 5.1`); `PaneRecord::model_cell` appends the
+effort. The board's `model` column is adaptive and absent until some pane has
+a model; the popup title and the card carry the same text after the harness. Unknown or missing fields
 default, so an old record still loads; an unparseable one is skipped rather
 than fatal.
 

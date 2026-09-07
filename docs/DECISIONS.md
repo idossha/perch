@@ -546,3 +546,31 @@ chat.
 **Revisit if** Claude gives hooks a return path for permission prompts (then
 approve-from-the-popup is the same shape), exposes questions from cloud
 sessions locally, or codex grows an answerable question tool.
+
+## 19. The model column is what the harness reported, never what the config says — 2026-09-07
+
+**Decision.** A pane's `model` and `effort` come only from hook payloads —
+Claude's `SessionStart.model` and `PostModelSwitch.to_model` plus `effort.level`
+on turn hooks, Codex's `model` on every payload, pi's extension's `model` and
+`effort` — and the board's `model` column exists only once some pane has
+reported one. A harness that has said nothing shows nothing. Labels are short
+(`model::model_label`): provider prefix and a leading `claude` dropped, version
+numbers dotted, dates and bracketed variants such as `[1m]` dropped.
+
+**Why.** The user wanted to see which model and effort each agent runs. Every
+harness makes the live value available in the events perch already reads, so
+the answer is authoritative; a configured default read from
+`~/.codex/config.toml` or `settings.json` would be wrong the moment `/model` is
+used and perch would have no way to know. Better an empty cell than a
+plausible lie — the same rule as decision 3's "hooks, not scraping". The
+context-window variant is dropped from the label because it is a size, not a
+model, and the column is for telling agents apart at a glance.
+
+**Cost.** A Claude pane shows its effort only after its first turn, and its
+model only when Claude includes it on `SessionStart` (it does not after
+`/clear` or a recovery) or on a switch; one more hook group
+(`PostModelSwitch`) is installed. Codex exposes no effort. The board gains a
+column whose width follows the longest label.
+
+**Revisit if** a harness starts omitting the model from every payload, or the
+column crowds the message on narrow terminals.

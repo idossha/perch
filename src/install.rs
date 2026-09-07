@@ -18,6 +18,7 @@ pub const CLAUDE_EVENTS: &[&str] = &[
     "SubagentStart",
     "SubagentStop",
     "PreToolUse",
+    "PostModelSwitch",
 ];
 
 /// The Codex hook events perch subscribes to. Codex names `PermissionRequest`

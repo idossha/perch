@@ -848,3 +848,24 @@ fn narrow_terminals_truncate_instead_of_panicking() {
         assert!(help.contains("help"), "{help}");
     }
 }
+
+/// The board carries a `model` column: the short label, then the effort level
+/// when the harness reports one, and nothing when it does not — never a
+/// configured default standing in for the live value.
+#[test]
+fn the_model_column_shows_the_label_and_effort_or_nothing() {
+    let mut app = board();
+    app.records[0].model = Some("claude-opus-5".into());
+    app.records[0].effort = Some("high".into());
+    app.records[1].model = Some("gpt-5.6-sol".into());
+    let out = lines(&app).join("\n");
+    assert!(out.contains("model"), "header:\n{out}");
+    let luna = out.lines().find(|l| l.contains("w2")).unwrap();
+    assert!(luna.contains("opus 5 high"), "{luna}");
+    let perch_row = out.lines().find(|l| l.contains("w1")).unwrap();
+    assert!(perch_row.contains("gpt 5.6 sol"), "{perch_row}");
+    let duet = out.lines().find(|l| l.contains("w4")).unwrap();
+    assert!(!duet.contains("opus") && !duet.contains("gpt"), "{duet}");
+    let cells = perch::tui::row_cells(&app.records[0], Utc::now());
+    assert_eq!(cells[3], "opus 5 high", "{cells:?}");
+}

@@ -24,6 +24,8 @@ type Payload = {
 	session_id: string | null;
 	cwd: string;
 	last_message: string | null;
+	model: string | null;
+	effort: string | null;
 };
 
 function report(event: string, ctx: any, last_message: string | null): void {
@@ -34,6 +36,8 @@ function report(event: string, ctx: any, last_message: string | null): void {
 			session_id: ctx?.sessionManager?.getSessionId?.() ?? null,
 			cwd: process.cwd(),
 			last_message,
+			model: ctx?.model?.id ?? null,
+			effort: ctx?.thinkingLevel ?? null,
 		};
 	} catch {
 		return;

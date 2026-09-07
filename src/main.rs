@@ -366,8 +366,8 @@ fn cmd_list(json: bool) -> anyhow::Result<()> {
     for r in &recs {
         let cells = tui::row_cells(r, now);
         println!(
-            "{:<6} {:<20} {:<7} {:<11} {:>5}  {}",
-            cells[0], cells[1], cells[2], cells[3], cells[4], cells[5]
+            "{:<6} {:<20} {:<7} {:<14} {:<11} {:>5}  {}",
+            cells[0], cells[1], cells[2], cells[3], cells[4], cells[5], cells[6]
         );
     }
     Ok(())

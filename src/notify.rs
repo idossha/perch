@@ -266,7 +266,15 @@ pub fn card(kind: Kind, rec: &PaneRecord, cfg: &Config) -> Card {
     }
 
     let where_ = rec.location.clone().unwrap_or_else(|| rec.pane.clone());
-    let mid: Vec<Seg> = vec![(format!("{where_}  ·  {}", rec.harness.as_str()), DIM.into())];
+    let model = rec.model_cell();
+    let mid: Vec<Seg> = vec![(
+        if model.is_empty() {
+            format!("{where_}  ·  {}", rec.harness.as_str())
+        } else {
+            format!("{where_}  ·  {} {model}", rec.harness.as_str())
+        },
+        DIM.into(),
+    )];
 
     let msg = rec
         .last_message

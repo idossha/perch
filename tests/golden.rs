@@ -224,3 +224,21 @@ fn perch_debug_shows_pane_ids_120x24() {
     app.debug = true;
     golden("debug_ids_120x24", &render_to_string(&app, 120, 24, now()));
 }
+
+/// The `model` column, present only once a pane has reported a model: label
+/// and effort for Claude, the slug for Codex, nothing for the rest.
+#[test]
+fn model_column_120x24() {
+    let mut app = board();
+    app.records[0].model = Some("claude-opus-5".into());
+    app.records[0].effort = Some("high".into());
+    app.records[2].model = Some("claude-fable-5-1".into());
+    app.records[2].effort = Some("max".into());
+    app.records[3].harness = Harness::Codex;
+    app.records[3].model = Some("gpt-5.6-sol".into());
+    app.normalize();
+    golden(
+        "model_column_120x24",
+        &render_to_string(&app, 120, 24, now()),
+    );
+}

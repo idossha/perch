@@ -69,6 +69,12 @@ pub fn apply_with(
         rec.cwd = Some(cwd.clone());
         rec.project = project_of(cwd);
     }
+    if let Some(m) = &parsed.model {
+        rec.model = Some(m.clone());
+    }
+    if let Some(e) = &parsed.effort {
+        rec.effort = Some(e.clone());
+    }
 
     let next = match &parsed.event {
         Event::SessionStart => State::Idle,
@@ -383,6 +389,8 @@ pub mod tests_support {
             session_id: None,
             cwd: None,
             agent_id: Some(agent_id.to_string()),
+            model: None,
+            effort: None,
         }
     }
 
