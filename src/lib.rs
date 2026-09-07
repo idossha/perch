@@ -1,7 +1,10 @@
 pub mod adapters;
+pub mod ask;
+pub mod codex_mcp;
 pub mod config;
 pub mod hook;
 pub mod install;
+pub mod mcp;
 pub mod model;
 pub mod notify;
 pub mod paths;

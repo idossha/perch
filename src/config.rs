@@ -8,10 +8,26 @@ pub struct Config {
     pub sounds: Sounds,
     /// The centered notification card.
     pub notify: Notify,
+    /// Answering `AskUserQuestion` from the dashboard.
+    pub ask: Ask,
     /// Per-pane sound cooldown, seconds.
     pub cooldown_secs: i64,
     /// Commands shown as `unknown` panes (reserved; no scraping in v1).
     pub watch_commands: Vec<String>,
+}
+
+/// `[ask]`. With `enabled = false` the `--ask` hook is a no-op and the
+/// harness's own dialog is the only dialog, exactly as before 0.4.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Ask {
+    pub enabled: bool,
+}
+
+impl Default for Ask {
+    fn default() -> Self {
+        Ask { enabled: true }
+    }
 }
 
 /// `[notify]`. Unknown keys — the retired `desktop`, the retired style
@@ -73,6 +89,7 @@ impl Default for Config {
         Config {
             sounds: Sounds::default(),
             notify: Notify::default(),
+            ask: Ask::default(),
             cooldown_secs: 3,
             watch_commands: Vec::new(),
         }

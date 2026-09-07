@@ -231,3 +231,83 @@ fn each_harness_has_a_real_adapter() {
         assert_eq!(p.event, Event::Stop { last_message: None });
     }
 }
+
+/// `AskUserQuestion` is the one tool whose `PreToolUse` perch reads in full:
+/// the questions, their options and the tool-use id the answer must name.
+#[test]
+fn an_ask_user_question_pre_tool_use_is_a_question() {
+    let p = parse("pre_tool_use_ask_user_question.json").unwrap();
+    let Event::Question {
+        tool_use_id,
+        questions,
+    } = p.event
+    else {
+        panic!("not a question: {:?}", p.event);
+    };
+    assert_eq!(tool_use_id, "toolu_01ask");
+    assert_eq!(questions.len(), 2);
+    assert_eq!(questions[0].header, "Backend");
+    assert_eq!(
+        questions[0].question,
+        "Which store backend should perch use?"
+    );
+    assert_eq!(questions[0].kind, "choice");
+    assert!(!questions[0].multi_select);
+    let labels: Vec<&str> = questions[0]
+        .options
+        .iter()
+        .map(|o| o.label.as_str())
+        .collect();
+    assert_eq!(labels, ["Files", "SQLite", "Memory"]);
+    assert_eq!(
+        questions[0].options[1].description,
+        "A single database file"
+    );
+    assert!(questions[1].multi_select);
+    assert_eq!(p.agent_id, None);
+
+    // A question kind perch has no control for still parses, so the hook can
+    // hand it straight back to the harness's own dialog.
+    let p = parse("pre_tool_use_ask_user_question_number.json").unwrap();
+    let Event::Question { questions, .. } = p.event else {
+        panic!("not a question");
+    };
+    assert_eq!(questions[0].kind, "number");
+    assert!(questions[0].options.is_empty());
+}
+
+/// In auto mode Claude does not run `PreToolUse` for `AskUserQuestion`; it
+/// goes straight to the dialog, and the `PermissionRequest` hook is the one
+/// that fires. Same tool input, no `tool_use_id`: the id is derived from the
+/// question texts so a defer on one event is recognised by the other.
+#[test]
+fn a_permission_request_for_ask_user_question_is_the_same_question() {
+    let p = parse("permission_request_ask_user_question.json").unwrap();
+    let Event::Question {
+        tool_use_id,
+        questions,
+    } = p.event
+    else {
+        panic!("not a question: {:?}", p.event);
+    };
+    assert!(tool_use_id.starts_with("q-"), "derived id: {tool_use_id}");
+    assert_eq!(questions.len(), 2);
+    assert_eq!(questions[1].header, "Harnesses");
+    let again = parse("permission_request_ask_user_question.json").unwrap();
+    let Event::Question {
+        tool_use_id: id2, ..
+    } = again.event
+    else {
+        panic!()
+    };
+    assert_eq!(tool_use_id, id2, "stable across calls");
+    let pre = parse("pre_tool_use_ask_user_question.json").unwrap();
+    let Event::Question { questions: q2, .. } = pre.event else {
+        panic!()
+    };
+    assert_eq!(
+        perch::model::question_key(&questions),
+        perch::model::question_key(&q2),
+        "the same questions have the same key whichever event carried them"
+    );
+}

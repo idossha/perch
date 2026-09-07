@@ -458,3 +458,91 @@ extra string compare per tool call.
 **Revisit if** Claude starts firing `SubagentStart` on resume, gives helper
 agents a distinguishable `agent_type`, or exposes the resumed agent's id
 anywhere earlier than the tool call.
+
+## 18. Claude's questions are answered from a popup that *is* the dialog — 2026-09-06
+
+**Decision.** Two Claude hook groups matched to `AskUserQuestion` — on
+`PreToolUse` and on `PermissionRequest` — run `perch hook claude --ask`. That
+hook records the question as `needs_input`, opens the answer form as a
+`display-popup` on every attached client (the asking pane's own client
+included), then blocks until a form writes `answers/<pane>.json`, and prints
+`allow` with `updatedInput.answers` — which Claude takes as the user's answer.
+**perch holds a question exactly as long as its popup is on screen.** Closing
+the popup — `Esc` in place, or `p` to close and jump to the pane — hands the
+question to Claude at once and its own dialog appears; so does the 59-minute
+deadline, and so does a question kind the form has no control for. The board
+shows such a pane as `⚑ question` and `Enter` jumps to it; it offers no
+answer key of its own. The plain hook ignores the payload. Claude only;
+`[ask] enabled = false` turns it off.
+
+**Why.** The request was to answer an agent's questions from perch and pass the
+answers back. For permission prompts and for cloud sessions there is no
+channel: the `permission_prompt` and `elicitation_dialog` notifications carry
+no text and no way to reply, and cloud sessions expose no local API. Claude's
+`PreToolUse` for `AskUserQuestion` is the one place both halves exist — the
+full question in `tool_input`, and a documented return path (`updatedInput`
+with `answers`, "enabling headless integrations that collect answers via their
+own UI"). Building on anything else would have meant scraping or a relay
+server, both rejected in decisions 1 and 3.
+
+`PermissionRequest` is not belt-and-braces: it is the only event auto mode
+fires for the question tool. The first live test in an auto-mode session showed
+Claude's own dialog and no hook run at all, while the same test in default mode
+went through `PreToolUse`; the transcripts differ in exactly that one hook
+record. Since the two events carry the same input and accept the same answer,
+one hook serves both, and a defer on the first is remembered so the second does
+not re-take a question the user chose to answer in the pane.
+
+The popup pops up where the user is, rather than waiting behind a key on the
+board, because the point of taking the question is to spare the walk to the
+pane. It is the card's own mechanism with the form as its body, so it costs no
+new tmux surface, and it can be answered on one client and vanish from the rest
+because every body polls the one record.
+
+"The popup is the dialog" replaced two earlier rules, each tried in use and
+each confusing in the same way. The first handed a question back whenever a
+focused client was showing the pane, so a glance at the pane took the board's
+`a` away for good. The second kept perch's hold after the popup was put away
+and offered `a` on the board to come back to it — and then a pane could show
+Claude "thinking" for as long as the user liked, with nothing on screen asking
+anything, while the answer lived behind a key on another screen. Both split
+the question's ownership across two surfaces and left the user to know which
+one had it. One rule ends that: whatever is on screen asking is the thing that
+has it — perch's popup while it is up, Claude's dialog the moment it is not.
+There is no held-but-hidden state, so there is nothing for `a` to do, and the
+board's job is what it always was: say what needs you, and take you there.
+
+Several agents asking at once are the normal case on a board, and two popups
+fighting for one client (tmux replaces the first) would lose an answer in
+progress. So a client holds one popup at a time, and the popup is a queue:
+it shows the next waiting set when the current one is done, oldest first,
+and says how many are behind it. `p` ends the popup because a form over the
+pane you just asked for would defeat it, and no popup opens on a client that is
+sitting on some other agent's dialog. The popup is sized from its content —
+wrapped question and descriptions — and capped by the client, because a form
+that cuts an option's description is a form that gets the wrong answer.
+
+**Cost.** One hook process per question stays alive while the human decides,
+which is the first time a perch process outlives its event; it is Claude's own
+hook, bounded by Claude's timeout, and holds no socket. The installed settings
+gain two groups with a one-hour timeout, and an install from 0.3 needs a `perch
+setup` re-run to get them (`doctor` reports wired either way, since the marker
+is `perch hook`). A `number` question is never taken. There is no "answer it
+later from the board": once Claude's dialog owns a question, only that dialog
+can take it, which is the price of having exactly one owner at a time.
+
+Codex and pi reach the same popup by a different road, because neither lets a
+hook answer its dialog: pi has no question tool at all, and Codex's
+`request_user_input` takes no answer in its input and exists only in Plan
+mode. Both harnesses let a model call tools perch provides — pi through its
+extension API, Codex through MCP — so perch provides the tool: `ask_user`, the
+same schema as Claude's, whose body is `perch hook <harness> --ask`. That
+keeps one hook, one popup and one answer file for all three, and it means
+Codex is never pushed into Plan mode for a question; the tool is there in
+every mode. A harness's own dialog remains the fallback: pi's select dialog
+inside the tool, and for Codex a tool result that tells the model to ask in
+chat.
+
+**Revisit if** Claude gives hooks a return path for permission prompts (then
+approve-from-the-popup is the same shape), exposes questions from cloud
+sessions locally, or codex grows an answerable question tool.

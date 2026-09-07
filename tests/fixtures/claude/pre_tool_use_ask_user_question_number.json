@@ -1,0 +1,1 @@
+{"session_id":"s-1","cwd":"/Users/x/00_development/perch","hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_use_id":"toolu_02num","tool_input":{"questions":[{"question":"How many workers?","header":"Workers","kind":"number","options":[],"multiSelect":false,"min":1,"max":8}]}}

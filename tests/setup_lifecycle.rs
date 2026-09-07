@@ -348,3 +348,46 @@ fn reordering_hooks_json_refreshes_the_indices() {
         "{body}"
     );
 }
+
+/// `perch setup` registers the `ask_user` MCP server in codex's config next
+/// to the user's own servers, doctor reports it, a second run changes nothing,
+/// and `uninstall` removes exactly that entry.
+#[test]
+fn setup_registers_the_codex_mcp_server_and_uninstall_removes_it() {
+    let home = fake_home();
+    let h = home.path();
+    let config = h.join(".codex/config.toml");
+    std::fs::write(
+        &config,
+        "model = \"gpt-5\"\n\n[mcp_servers.playwright]\ncommand = \"npx\"\nargs = [\"-y\", \"@playwright/mcp\"]\n",
+    )
+    .unwrap();
+    assert!(perch(h, &["setup"]).status.success());
+    let body = std::fs::read_to_string(&config).unwrap();
+    assert!(body.contains("[mcp_servers.perch]"), "{body}");
+    assert!(body.contains("args = [\"mcp\"]"), "{body}");
+    assert!(
+        body.contains("\"TMUX_PANE\""),
+        "the hook needs the pane: {body}"
+    );
+    assert!(
+        body.contains("[mcp_servers.perch.tools.ask_user]"),
+        "{body}"
+    );
+    assert!(body.contains("[mcp_servers.playwright]"), "{body}");
+    assert!(body.contains("model = \"gpt-5\""), "{body}");
+    let out = perch(h, &["doctor"]);
+    assert!(stdout(&out).contains("mcp: yes"), "{}", stdout(&out));
+
+    assert!(perch(h, &["setup"]).status.success());
+    assert_eq!(
+        std::fs::read_to_string(&config).unwrap(),
+        body,
+        "idempotent"
+    );
+
+    assert!(perch(h, &["uninstall", "--keep-state"]).status.success());
+    let after = std::fs::read_to_string(&config).unwrap();
+    assert!(!after.contains("mcp_servers.perch"), "{after}");
+    assert!(after.contains("[mcp_servers.playwright]"), "{after}");
+}

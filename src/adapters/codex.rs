@@ -5,7 +5,7 @@
 //! drifted between Codex versions, so the adapter accepts the aliases it has
 //! been seen to use rather than insisting on one spelling.
 
-use crate::model::{Event, ParsedEvent};
+use crate::model::{question_key, Event, ParsedEvent, Question};
 
 /// Keys that may carry the event name.
 const EVENT_KEYS: &[&str] = &["hook_event_name", "event"];
@@ -37,7 +37,34 @@ pub fn parse(raw: &serde_json::Value) -> anyhow::Result<Option<ParsedEvent>> {
         "PermissionRequest" => Event::NeedsInput {
             reason: "permission_request".to_string(),
         },
+        // perch's own `ask_user` MCP tool (`perch mcp`), sent to
+        // `perch hook codex --ask`: the same question set Claude's tool uses.
+        "ask_user" => {
+            let questions = raw
+                .get("tool_input")
+                .map(Question::parse_list)
+                .unwrap_or_default();
+            if questions.is_empty() {
+                return Ok(None);
+            }
+            Event::Question {
+                tool_use_id: first_str(raw, &["tool_use_id"])
+                    .unwrap_or_else(|| question_key(&questions)),
+                questions,
+            }
+        }
         "SessionEnd" if agent_id.is_none() => Event::SessionEnd,
+        // Codex's question tool: the pane is blocked on the human from here.
+        // Codex hooks cannot return an answer, so this is detection only —
+        // the chime, the card and the board flag, then `Enter` to the pane.
+        "PreToolUse"
+            if agent_id.is_none()
+                && first_str(raw, &["tool_name"]).as_deref() == Some("request_user_input") =>
+        {
+            Event::NeedsInput {
+                reason: "request_user_input".to_string(),
+            }
+        }
         // Proof the agent is running again: clears a stale `needs_input`.
         "PreToolUse" if agent_id.is_none() => Event::ToolUse,
         // Pre/PostCompact and Pre/PostToolUse are noise here.

@@ -53,7 +53,13 @@ enum StatusFormat {
 #[derive(Subcommand)]
 enum Cmd {
     /// Read a hook payload on stdin and update this pane's record.
-    Hook { harness: HarnessArg },
+    Hook {
+        harness: HarnessArg,
+        /// The `AskUserQuestion` variant: record the question, then wait for
+        /// an answer from the dashboard and hand it back to the harness.
+        #[arg(long)]
+        ask: bool,
+    },
     /// Snapshot of every tracked pane.
     List {
         #[arg(long)]
@@ -108,6 +114,26 @@ enum Cmd {
         #[arg(long = "line")]
         lines: Vec<String>,
     },
+    /// Open the answer form for a pane's question as a popup on every client.
+    ///
+    /// Spawned detached by the `--ask` hook.
+    #[command(hide = true)]
+    AskPopup {
+        #[arg(long)]
+        pane: String,
+    },
+    /// The form popup's body (run by `ask-popup` inside `display-popup`).
+    #[command(hide = true)]
+    AskForm {
+        #[arg(long)]
+        pane: String,
+        /// The client this popup is drawn on: where `p` jumps.
+        #[arg(long)]
+        client: Option<String>,
+    },
+    /// Serve the `ask_user` tool over MCP on stdio (registered in Codex by
+    /// `perch install codex`).
+    Mcp,
     /// Sound helpers.
     #[command(subcommand)]
     Sound(SoundCmd),
@@ -163,8 +189,8 @@ enum SoundCmd {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     // A hook must never fail its harness: report and exit 0 regardless.
-    if let Cmd::Hook { harness } = cli.cmd {
-        if let Err(e) = hook::run(harness.into()) {
+    if let Cmd::Hook { harness, ask } = cli.cmd {
+        if let Err(e) = hook::run(harness.into(), ask) {
             eprintln!("perch: hook error: {e:#}");
         }
         return ExitCode::SUCCESS;
@@ -217,6 +243,18 @@ fn dispatch(cmd: Cmd) -> anyhow::Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("unknown kind: {kind}"))?;
             notify::body(kind, duration_ms, &lines, client.as_deref());
             Ok(())
+        }
+        Cmd::Mcp => {
+            perch::mcp::serve();
+            Ok(())
+        }
+        Cmd::AskPopup { pane } => {
+            perch::ask::show(tmux::current().as_ref(), &pane);
+            Ok(())
+        }
+        Cmd::AskForm { pane, client } => {
+            let client = require_client(client.as_deref())?;
+            perch::ask::form_body(tmux::current().as_ref(), &pane, &client)
         }
         Cmd::Sound(SoundCmd::Test { event }) => {
             let cfg = config::load();

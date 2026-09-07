@@ -152,6 +152,10 @@ pub fn run(paths: &Paths, opts: &SetupOpts) -> Result<String> {
             let entries = install::codex_trust_entries(&paths.codex_hooks);
             trust_report = crate::trust::install(&paths.codex_config, &entries, opts.dry_run)
                 .unwrap_or_else(|e| format!("trust   {e:#}\n"));
+            trust_report.push_str(
+                &crate::codex_mcp::install(&paths.codex_config, opts.dry_run)
+                    .unwrap_or_else(|e| format!("mcp     {e:#}\n")),
+            );
         }
     }
 
@@ -287,6 +291,9 @@ pub struct HarnessReport {
     /// codex only: whether every perch handler is recorded as trusted.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trust: Option<bool>,
+    /// codex only: whether the `ask_user` MCP server is registered.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -343,6 +350,7 @@ pub fn doctor(paths: &Paths) -> Doctor {
             hook: contains_perch_hook(&paths.claude_settings),
             file: paths.claude_settings.display().to_string(),
             trust: None,
+            mcp: None,
         },
         HarnessReport {
             name: "codex".into(),
@@ -350,6 +358,7 @@ pub fn doctor(paths: &Paths) -> Doctor {
             hook: contains_perch_hook(&paths.codex_hooks),
             file: paths.codex_hooks.display().to_string(),
             trust: Some(codex_trusted(paths)),
+            mcp: Some(crate::codex_mcp::installed_at(&paths.codex_config)),
         },
         HarnessReport {
             name: "pi".into(),
@@ -357,6 +366,7 @@ pub fn doctor(paths: &Paths) -> Doctor {
             hook: pi_wired(paths),
             file: paths.pi_extension().display().to_string(),
             trust: None,
+            mcp: None,
         },
     ];
     let records = fs::read_dir(paths.state_dir.join("panes"))
@@ -389,10 +399,13 @@ pub fn doctor_text(d: &Doctor) -> String {
     let _ = writeln!(out, "perch {} at {}", d.version, d.binary);
     for h in &d.harnesses {
         if h.present {
-            let trust = match h.trust {
+            let mut trust = match h.trust {
                 Some(t) => format!("  trust: {:<3}", yn(t)),
                 None => String::new(),
             };
+            if let Some(m) = h.mcp {
+                trust.push_str(&format!("  mcp: {:<3}", yn(m)));
+            }
             let _ = writeln!(
                 out,
                 "{:<7} found      hook: {:<3}{}  {}",
@@ -543,6 +556,10 @@ pub fn uninstall(paths: &Paths, opts: &UninstallOpts) -> Result<String> {
     out.push_str(&crate::trust::uninstall(
         &paths.codex_config,
         &trust_keys,
+        opts.dry_run,
+    )?);
+    out.push_str(&crate::codex_mcp::uninstall(
+        &paths.codex_config,
         opts.dry_run,
     )?);
     unhook_file(

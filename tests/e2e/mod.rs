@@ -368,6 +368,28 @@ impl PerchRun {
         self
     }
 
+    /// Start the process and return it, stdin already written and closed.
+    /// For the one perch command that waits: `perch hook claude --ask`.
+    pub fn spawn(self) -> std::process::Child {
+        let mut cmd = Command::new(PERCH_BIN);
+        cmd.env_remove("PERCH_NO_TMUX");
+        cmd.args(&self.args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        for (k, v) in &self.env {
+            cmd.env(k, v);
+        }
+        let mut child = cmd.spawn().expect("spawn perch");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(self.stdin.unwrap_or_default().as_bytes())
+            .ok();
+        child
+    }
+
     pub fn run(self) -> PerchOut {
         let mut cmd = Command::new(PERCH_BIN);
         // CI sets PERCH_NO_TMUX=1 workflow-wide for the unit suite; these
@@ -400,7 +422,19 @@ impl PerchRun {
 pub struct Client {
     pub name: String,
     _master: Box<dyn portable_pty::MasterPty + Send>,
+    /// The pty's one writer, taken at attach: `take_writer` works only once.
+    writer: std::sync::Mutex<Box<dyn Write + Send>>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
+}
+
+impl Client {
+    /// Type into the client's own terminal — the only way to reach a
+    /// `display-popup`, which `send-keys` cannot address.
+    pub fn type_bytes(&self, bytes: &[u8]) {
+        let mut w = self.writer.lock().unwrap();
+        w.write_all(bytes).expect("write to pty");
+        w.flush().ok();
+    }
 }
 
 impl Client {
@@ -453,9 +487,11 @@ impl Client {
         );
         assert!(!name.is_empty(), "no client attached within 3s");
 
+        let writer = std::sync::Mutex::new(master.take_writer().expect("pty writer"));
         Client {
             name,
             _master: master,
+            writer,
             child,
         }
     }

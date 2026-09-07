@@ -36,6 +36,70 @@ pub const CODEX_EVENTS: &[&str] = &[
 /// Marker used to decide whether perch is already installed in a hook array.
 pub const MARKER: &str = "perch hook";
 
+/// The one Claude tool whose `PreToolUse` perch answers rather than observes.
+pub const ASK_TOOL: &str = "AskUserQuestion";
+
+/// Timeout on the `--ask` hook group. The hook itself gives up after
+/// `reducer::ASK_WAIT_SECS`; this only has to be the longer of the two, or the
+/// harness would kill the hook while a human is still deciding.
+pub const ASK_HOOK_TIMEOUT_SECS: u64 = 60 * 60;
+
+/// One hook group perch installs: the event, its matcher when it has one,
+/// and the command line.
+struct Spec {
+    event: &'static str,
+    matcher: Option<&'static str>,
+    command: &'static str,
+    timeout: u64,
+}
+
+fn claude_specs() -> Vec<Spec> {
+    let mut v: Vec<Spec> = CLAUDE_EVENTS
+        .iter()
+        .map(|e| Spec {
+            event: e,
+            matcher: (*e == "SessionStart").then_some("*"),
+            command: "perch hook claude",
+            timeout: 5,
+        })
+        .collect();
+    v.push(Spec {
+        event: "PreToolUse",
+        matcher: Some(ASK_TOOL),
+        command: "perch hook claude --ask",
+        timeout: ASK_HOOK_TIMEOUT_SECS,
+    });
+    // Auto mode skips `PreToolUse` for the question tool and goes straight to
+    // the dialog; `PermissionRequest` is the event that fires there.
+    v.push(Spec {
+        event: "PermissionRequest",
+        matcher: Some(ASK_TOOL),
+        command: "perch hook claude --ask",
+        timeout: ASK_HOOK_TIMEOUT_SECS,
+    });
+    v
+}
+
+/// Codex clamps a `SessionEnd` hook to this many seconds and warns at every
+/// start about a longer one.
+pub const CODEX_SESSION_END_TIMEOUT_SECS: u64 = 3;
+
+fn codex_specs() -> Vec<Spec> {
+    CODEX_EVENTS
+        .iter()
+        .map(|e| Spec {
+            event: e,
+            matcher: (*e == "SessionStart").then_some("*"),
+            command: "perch hook codex",
+            timeout: if *e == "SessionEnd" {
+                CODEX_SESSION_END_TIMEOUT_SECS
+            } else {
+                10
+            },
+        })
+        .collect()
+}
+
 pub fn claude_settings_path() -> PathBuf {
     Paths::from_env().claude_settings
 }
@@ -74,32 +138,26 @@ pub fn perch_tmux_conf_path() -> PathBuf {
     crate::config::config_dir().join("perch.tmux.conf")
 }
 
-/// The hook group perch appends. `matcher` is set for the events that take one.
-fn perch_group(event: &str, command: &str, timeout: u64) -> Value {
-    let hooks = json!([{ "type": "command", "command": command, "timeout": timeout }]);
-    if event == "SessionStart" {
-        json!({ "matcher": "*", "hooks": hooks })
-    } else {
-        json!({ "hooks": hooks })
+/// The hook group perch appends for one spec.
+fn perch_group(spec: &Spec) -> Value {
+    let hooks = json!([{ "type": "command", "command": spec.command, "timeout": spec.timeout }]);
+    match spec.matcher {
+        Some(m) => json!({ "matcher": m, "hooks": hooks }),
+        None => json!({ "hooks": hooks }),
     }
 }
 
-/// `true` when any command string anywhere in this event's array mentions perch.
-fn already_installed(arr: &Value) -> bool {
-    let Some(groups) = arr.as_array() else {
-        return false;
-    };
-    groups.iter().any(|g| {
-        g.get("hooks")
-            .and_then(|h| h.as_array())
-            .map(|hs| {
-                hs.iter().any(|h| {
-                    h.get("command")
-                        .and_then(|c| c.as_str())
-                        .is_some_and(|c| c.contains(MARKER))
-                })
-            })
-            .unwrap_or(false)
+/// The perch hook entry for this exact command in the event's array, if any.
+///
+/// Exact, not a `perch hook` substring: the plain and the `--ask` variants
+/// share an event, and an install that predates the second must gain it.
+fn installed_entry<'a>(arr: &'a mut Value, command: &str) -> Option<&'a mut Value> {
+    arr.as_array_mut()?.iter_mut().find_map(|g| {
+        g.get_mut("hooks")?.as_array_mut()?.iter_mut().find(|h| {
+            h.get("command")
+                .and_then(|c| c.as_str())
+                .is_some_and(|c| c.trim() == command)
+        })
     })
 }
 
@@ -117,15 +175,15 @@ pub struct Merge {
 /// Append perch's hook group to each event array, never reordering or dropping
 /// what is already there.
 pub fn merge_claude_settings(settings: Value) -> Merge {
-    merge_hooks(settings, CLAUDE_EVENTS, "perch hook claude", 5)
+    merge_hooks(settings, &claude_specs())
 }
 
 /// The same merge against `~/.codex/hooks.json`, which has Claude's shape.
 pub fn merge_codex_hooks(settings: Value) -> Merge {
-    merge_hooks(settings, CODEX_EVENTS, "perch hook codex", 10)
+    merge_hooks(settings, &codex_specs())
 }
 
-fn merge_hooks(mut settings: Value, events: &[&str], command: &str, timeout: u64) -> Merge {
+fn merge_hooks(mut settings: Value, specs: &[Spec]) -> Merge {
     if !settings.is_object() {
         settings = json!({});
     }
@@ -140,22 +198,32 @@ fn merge_hooks(mut settings: Value, events: &[&str], command: &str, timeout: u64
     let mut added = Vec::new();
     let mut skipped = Vec::new();
     let mut created_events = Vec::new();
-    for event in events {
-        if !hooks.contains_key(*event) {
-            created_events.push((*event).to_string());
+    for spec in specs {
+        let event = spec.event;
+        let label = match spec.matcher {
+            Some(m) if m != "*" => format!("{event}({m})"),
+            _ => event.to_string(),
+        };
+        if !hooks.contains_key(event) {
+            created_events.push(event.to_string());
         }
-        let arr = hooks.entry(*event).or_insert_with(|| json!([]));
+        let arr = hooks.entry(event).or_insert_with(|| json!([]));
         if !arr.is_array() {
             *arr = json!([]);
         }
-        if already_installed(arr) {
-            skipped.push((*event).to_string());
+        if let Some(entry) = installed_entry(arr, spec.command) {
+            // Already ours: bring its timeout to the current spec, so a
+            // re-run corrects an older install (codex clamps `SessionEnd`).
+            if entry.get("timeout").and_then(|t| t.as_u64()) != Some(spec.timeout) {
+                entry["timeout"] = json!(spec.timeout);
+                added.push(format!("{label} (timeout)"));
+            } else {
+                skipped.push(label);
+            }
             continue;
         }
-        arr.as_array_mut()
-            .expect("array")
-            .push(perch_group(event, command, timeout));
-        added.push((*event).to_string());
+        arr.as_array_mut().expect("array").push(perch_group(spec));
+        added.push(label);
     }
     Merge {
         settings,
@@ -449,7 +517,9 @@ mod tests {
         assert_eq!(stop[1]["hooks"][0]["timeout"], 5);
         assert_eq!(m.settings["hooks"]["SessionStart"][1]["matcher"], "*");
         assert_eq!(m.settings["model"], "opus");
-        assert_eq!(m.added.len(), CLAUDE_EVENTS.len());
+        // Every event, plus the AskUserQuestion groups on PreToolUse and
+        // PermissionRequest.
+        assert_eq!(m.added.len(), CLAUDE_EVENTS.len() + 2);
     }
 
     #[test]
@@ -458,7 +528,7 @@ mod tests {
         let twice = merge_claude_settings(once.clone());
         assert_eq!(twice.settings, once);
         assert!(twice.added.is_empty());
-        assert_eq!(twice.skipped.len(), CLAUDE_EVENTS.len());
+        assert_eq!(twice.skipped.len(), CLAUDE_EVENTS.len() + 2);
     }
 
     #[test]

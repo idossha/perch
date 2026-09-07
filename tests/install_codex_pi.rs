@@ -204,3 +204,75 @@ fn pi_dry_run_and_print_write_nothing() {
     assert!(printed.contains("ExtensionAPI"), "{printed}");
     assert!(!ext_dir.join("perch.ts").exists());
 }
+
+/// Codex clamps a `SessionEnd` hook to three seconds and warns at every
+/// start about anything longer, so that one group is installed at three — and
+/// a re-run brings an older install's group down to it instead of leaving it.
+#[test]
+fn codex_session_end_hook_is_installed_within_the_clamp_and_older_installs_are_corrected() {
+    use perch::install::merge_codex_hooks;
+    let m = merge_codex_hooks(serde_json::json!({}));
+    let end = &m.settings["hooks"]["SessionEnd"][0]["hooks"][0];
+    assert_eq!(end["command"], "perch hook codex");
+    assert_eq!(end["timeout"], 3, "{end}");
+    assert_eq!(m.settings["hooks"]["Stop"][0]["hooks"][0]["timeout"], 10);
+
+    let old = serde_json::json!({ "hooks": { "SessionEnd": [
+        { "hooks": [{ "type": "command", "command": "perch hook codex", "timeout": 10 }] }
+    ]}});
+    let m = merge_codex_hooks(old);
+    let end = &m.settings["hooks"]["SessionEnd"][0]["hooks"][0];
+    assert_eq!(end["timeout"], 3, "corrected in place: {end}");
+    assert_eq!(
+        m.settings["hooks"]["SessionEnd"].as_array().unwrap().len(),
+        1,
+        "not duplicated"
+    );
+    assert!(
+        m.added.iter().any(|a| a.contains("SessionEnd")),
+        "reported as a change: {:?}",
+        m.added
+    );
+    let again = merge_codex_hooks(m.settings.clone());
+    assert!(again.added.is_empty(), "and then idempotent");
+}
+
+/// Regression: the codex hooks the user actually had — a `SessionEnd` entry at
+/// ten seconds — made codex warn at every start; and a Claude install from
+/// 0.3 had one `--ask` group where 0.4 needs two. Both are corrected by one
+/// `setup` re-run, and both are then stable.
+#[test]
+fn a_zero_three_install_is_brought_to_zero_four_by_one_setup_run() {
+    use perch::install::{merge_claude_settings, merge_codex_hooks};
+    let claude_0_3 = serde_json::json!({ "hooks": {
+        "PreToolUse": [
+            { "hooks": [{ "type": "command", "command": "perch hook claude", "timeout": 5 }] },
+            { "matcher": "AskUserQuestion", "hooks": [{ "type": "command", "command": "perch hook claude --ask", "timeout": 3600 }] }
+        ]
+    }});
+    let m = merge_claude_settings(claude_0_3);
+    assert_eq!(
+        m.settings["hooks"]["PermissionRequest"][0]["matcher"],
+        "AskUserQuestion"
+    );
+    assert_eq!(
+        m.settings["hooks"]["PreToolUse"].as_array().unwrap().len(),
+        2,
+        "no duplicate ask group"
+    );
+    let again = merge_claude_settings(m.settings.clone());
+    assert!(again.added.is_empty());
+
+    let codex_0_3 = serde_json::json!({ "hooks": {
+        "SessionEnd": [{ "hooks": [{ "type": "command", "command": "perch hook codex", "timeout": 10 }] }],
+        "Stop": [{ "hooks": [{ "type": "command", "command": "perch hook codex", "timeout": 10 }] }]
+    }});
+    let m = merge_codex_hooks(codex_0_3);
+    assert_eq!(
+        m.settings["hooks"]["SessionEnd"][0]["hooks"][0]["timeout"],
+        3
+    );
+    assert_eq!(m.settings["hooks"]["Stop"][0]["hooks"][0]["timeout"], 10);
+    let again = merge_codex_hooks(m.settings.clone());
+    assert!(again.added.is_empty());
+}

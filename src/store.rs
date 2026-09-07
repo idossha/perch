@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 
-use crate::model::{PaneRecord, State};
+use crate::model::{Answer, PaneRecord, State};
 use crate::tmux::{self, LivePane, Tmux};
 
 const EVENTS_MAX_BYTES: u64 = 5 * 1024 * 1024;
@@ -32,6 +32,58 @@ pub fn events_path() -> PathBuf {
 
 pub fn mute_path() -> PathBuf {
     state_dir().join("mute")
+}
+
+/// Where the dashboard leaves an answer for a waiting `--ask` hook: one file
+/// per pane, written tmp-then-rename and consumed by the hook that reads it.
+pub fn answers_dir() -> PathBuf {
+    state_dir().join("answers")
+}
+
+fn answer_path(pane: &str) -> PathBuf {
+    answers_dir().join(format!("{}.json", sanitize(pane)))
+}
+
+/// Leave an answer (or a defer) for the hook waiting on `answer.pane`.
+pub fn write_answer(answer: &Answer) -> Result<()> {
+    let dir = answers_dir();
+    fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+    let tmp = dir.join(format!(
+        ".{}.{}.tmp",
+        sanitize(&answer.pane),
+        std::process::id()
+    ));
+    fs::write(&tmp, serde_json::to_vec(answer)?)?;
+    fs::rename(&tmp, answer_path(&answer.pane))?;
+    Ok(())
+}
+
+/// Hand a question back and wait until the hook has taken the defer: the
+/// record no longer carries that question. Bounded, so a hook that is gone
+/// cannot hold the caller; a jump that follows must not race the tmux hooks
+/// into reopening the very question being handed back.
+pub fn defer_and_wait(pane: &str, tool_use_id: &str) {
+    let _ = write_answer(&Answer::defer(pane, tool_use_id));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1500);
+    while std::time::Instant::now() < deadline {
+        let still = load(pane)
+            .and_then(|r| r.question)
+            .is_some_and(|q| q.tool_use_id == tool_use_id);
+        if !still {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+/// Take the answer left for `pane`, removing the file. `None` when there is
+/// none, or when it is unreadable (in which case it is removed too: a broken
+/// answer must not block the next one).
+pub fn take_answer(pane: &str) -> Option<Answer> {
+    let path = answer_path(pane);
+    let body = fs::read(&path).ok()?;
+    let _ = fs::remove_file(&path);
+    serde_json::from_slice(&body).ok()
 }
 
 pub fn now_rfc3339() -> String {
@@ -154,6 +206,9 @@ pub fn mark_seen(t: &dyn Tmux, records: &[PaneRecord]) -> usize {
     let any_focus = tmux::any_focus_info(&views);
     let now = now_rfc3339();
     let mut cmds: Vec<Vec<String>> = Vec::new();
+    // Questions are deliberately not part of this: looking at a pane whose
+    // question perch is holding hands nothing back. The popup is the dialog
+    // wherever you are, and `a` keeps working until you choose `p` or Enter.
     for rec in records {
         if rec.state != State::Done {
             continue;

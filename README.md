@@ -104,6 +104,8 @@ perch install tmux --apply
 
 ```
 perch hook <claude|codex|pi>          read a hook payload on stdin, update this pane
+perch hook claude --ask               the AskUserQuestion variant: pop up the form, wait for its answer
+perch mcp                             the ask_user tool for Codex, over MCP on stdio (registered by setup)
 perch list [--json]                   snapshot of every tracked pane
 perch status [--format plain|tmux]    one-line summary for the status bar
 perch next --client <name>            jump a client to the oldest waiting pane
@@ -183,23 +185,64 @@ counts too, and an agent Claude runs for its own internal purposes does not.
 | `S` | run `perch setup` (shown as a banner until perch is wired) |
 | `q` / `Esc` | quit |
 
-### Navigation guarantees
+### Answering an agent's questions
 
-- Every jump is one `tmux switch-client -c <client> -t <pane_id>` — the client
-  is always named, so a second attached client or a popup's own pty can never
-  send you to the wrong screen, and the pane is addressed by id, so a duplicate
-  window or session name cannot either.
-- The cursor is keyed by pane id, not by row number. The board reorders itself
-  as agents change state; the selection stays on the agent you picked.
-- A jump is waited on and checked. If the pane is gone, the dashboard says
-  `pane %N is gone` and stays open instead of exiting or moving you somewhere
-  else. Only a real move closes the popup.
-- `PERCH_DEBUG=1` prints each jump's exact tmux command to stderr.
+When Claude asks you something with its question tool — the multiple-choice
+dialogs a skill like `ask-user` drives, or any `AskUserQuestion` — the chime
+plays and **the answer form pops up in the middle of whatever you are doing**,
+on every attached client, the asking pane included. Each question is a tab
+across the top, answered ones ticked; `j`/`k` move, `Enter` picks (or `Space`
+ticks several, then `Enter` moves on), `Other…` opens a free-text line,
+`←`/`→` (or `Tab`/`Shift-Tab`, `h`/`l`) go back and forth between the tabs,
+and `Enter` on the last tab sends. The answers go to Claude exactly as if you
+had clicked them and the pane goes back to `working`. Answer on one client and
+the popup on every other client closes too. The popup is sized to its content:
+long questions and descriptions wrap rather than being cut, within the client
+it is drawn on.
 
-The view refreshes from disk every second. The `g` and `e` choices are
-remembered in `~/.local/state/perch/tui.json`. The palette is `dark` by
-default; set `PERCH_THEME=light` or `[tui] theme = "light"` in the config for
-a light terminal.
+**The popup is the dialog.** perch holds a question only while its popup is
+on screen. Close it — `Esc`, or `p` to close it and jump to the pane — and the
+question goes to Claude at once: its own dialog appears in the pane, and that
+is where it is answered from then on. There is no in-between state where a
+pane looks busy but nothing is asking. The board shows such a pane as
+`⚑ question` with the question as its message; `Enter` jumps to it.
+
+The popup's title says whose question it is — `⚑ perch (main) · claude · api`:
+project and branch, harness, and the pane's tmux window — so two sessions
+asking at once are told apart at a glance.
+
+**Several agents asking at once queue up.** A client shows one popup at a
+time; a question that arrives while you are answering another waits, the title
+reads `+1 waiting`, and when you finish the set (send, `Esc` or `p`) the next
+set appears in the same popup, oldest first. A client that is sitting on a pane
+with an agent's own dialog open is left alone until it moves.
+
+All three harnesses are answered this way, each through the channel it has.
+Claude's hook API lets a hook answer its own tool (`PreToolUse`, or in auto
+mode `PermissionRequest`, returning `updatedInput` with `answers`). pi has no
+question tool, so perch's pi extension registers one — `ask_user` — that sends
+the questions to `perch hook pi --ask`, returns the popup's answers to the
+model, and falls back to pi's own select dialog if perch hands the question
+back. Codex's own `request_user_input` cannot be answered by a hook and exists
+only in Plan mode, so `perch setup` registers a tiny MCP server (`perch mcp`)
+in Codex's config that gives its model the same `ask_user` tool, in every mode;
+the skill tells Codex to prefer it. A Codex `request_user_input` that does fire
+is still flagged — the chime and the `⚑ needs_input` row — and `Enter` takes
+you to the pane.
+Question kinds the form has no control for (a number slider) go to Claude at
+once. `[ask] enabled = false` turns the whole thing off. If a question ever
+reaches Claude's own dialog when you expected the popup,
+`~/.local/state/perch/ask.log` says what perch did with it and why. An install
+from 0.3 or earlier needs one `perch setup` to gain the two extra hook entries;
+`perch doctor` still reads as wired without it.
+
+**Teach your agents to ask this way.** None of this fires for a question typed
+into the chat: it has to go through the harness's question tool. A skill that
+tells every agent to do so — with headers short enough for the tabs, a
+recommended option first, and a grill mode for stress-testing plans — is the
+other half of the feature. It ships in this repo as
+[`skills/ask-user/SKILL.md`](skills/ask-user/SKILL.md): symlink or copy the
+directory into `~/.claude/skills/` (Claude) or `~/.agents/skills/` (Codex, pi).
 
 ## Config
 
@@ -215,6 +258,8 @@ done = "Glass"
 needs_input = "Ping"
 error = "Basso"
 
+[ask]
+enabled = true        # answer Claude's questions through perch's popup (see TUI keys)
 ```
 
 A sound is the only thing perch does to get your attention: it costs no screen,
@@ -230,8 +275,9 @@ and `needs_input`.
 A pane is identified by its tmux pane id (`%NN`), read from `$TMUX_PANE`, which
 hook processes inherit from the agent. Records live in
 `~/.local/state/perch/panes/<pane>.json`, written atomically, with an
-append-only `~/.local/state/perch/events.jsonl` log (rotated at 5 MB) and a
-`mute` marker file.
+append-only `~/.local/state/perch/events.jsonl` log (rotated at 5 MB), a
+`mute` marker file, and `answers/<pane>.json` while an answer is on its way
+from the board to the hook waiting for it.
 
 Outside tmux there is no `$TMUX_PANE`, so `perch hook` reads its payload and
 exits without writing anything — the agent runs exactly as before. `list`,
@@ -290,7 +336,8 @@ perch uses herdr's definitions:
 |---|---|
 | `working` | a turn is in progress |
 | `delegating` | the pane's own turn ended, but subagents it spawned are still running |
-| `needs_input` | a real approval or question is on screen; the agent is blocked on you |
+| `needs_input` | a permission prompt is on screen; the agent is blocked on you |
+| `question` | the agent asked you something: perch's popup, or its own dialog, is waiting |
 | `done` | the turn finished and you have not looked at the pane since |
 | `idle` | ready for input, and seen |
 | `starting` / `ended` | the session has not reported yet / its pane is gone |

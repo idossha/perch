@@ -4,7 +4,7 @@
 //! plus event-specific fields. Subagent events carry `agent_id`; they are
 //! parsed too, and the reducer folds them into the parent pane's `children`.
 
-use crate::model::{Event, ParsedEvent};
+use crate::model::{question_key, Event, ParsedEvent, Question};
 
 /// Notification types that mean the human is blocking the agent: an approval
 /// or a question with a dialog on screen. `idle_prompt` is deliberately absent
@@ -68,12 +68,23 @@ pub fn parse(raw: &serde_json::Value) -> anyhow::Result<Option<ParsedEvent>> {
             }
         }
         "SessionEnd" if agent_id.is_none() => Event::SessionEnd,
+        // The dialog is about to be shown. For `AskUserQuestion` this is the
+        // event auto mode fires (it skips `PreToolUse` for that tool), and it
+        // accepts the same `updatedInput` answer. Anything else here is not
+        // subscribed to; parse it to nothing rather than guess.
+        "PermissionRequest" if agent_id.is_none() => match ask_user_question(raw) {
+            Some(q) => q,
+            None => return Ok(None),
+        },
         // `SendMessage` resumes an existing background subagent, and Claude
         // sends no `SubagentStart` for that. Its target is the only place the
         // agent id appears, so the pre-tool payload is where a resume is seen.
         "PreToolUse" if agent_id.is_none() => match send_message_target(raw) {
             Some(id) => Event::SubagentResume { id },
-            None => Event::ToolUse,
+            None => match ask_user_question(raw) {
+                Some(q) => q,
+                None => Event::ToolUse,
+            },
         },
         // PreCompact and friends are noise for the dashboard; so is a
         // session-level event attributed to a subagent.
@@ -104,6 +115,25 @@ fn send_message_target(raw: &serde_json::Value) -> Option<String> {
     };
     let to = to.trim();
     (!to.is_empty()).then(|| to.to_string())
+}
+
+/// An `AskUserQuestion` call, read in full: the one tool whose input perch
+/// needs the text of, because the `--ask` hook can answer it.
+fn ask_user_question(raw: &serde_json::Value) -> Option<Event> {
+    if raw.get("tool_name").and_then(|v| v.as_str())? != "AskUserQuestion" {
+        return None;
+    }
+    let questions = Question::parse_list(raw.get("tool_input")?);
+    if questions.is_empty() {
+        return None;
+    }
+    // `PermissionRequest` carries no `tool_use_id`: derive one from the
+    // questions themselves, so the two events agree on what was asked.
+    let tool_use_id = str_field(raw, "tool_use_id").unwrap_or_else(|| question_key(&questions));
+    Some(Event::Question {
+        tool_use_id,
+        questions,
+    })
 }
 
 fn str_field(raw: &serde_json::Value, key: &str) -> Option<String> {

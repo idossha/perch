@@ -1,4 +1,4 @@
-use crate::model::{Event, PaneRecord, ParsedEvent, State, Subagent};
+use crate::model::{Event, PaneRecord, ParsedEvent, PendingQuestion, State, Subagent};
 use crate::store;
 
 /// Finished subagents are kept this long, so a `done` child stays visible for
@@ -13,6 +13,12 @@ pub const MAX_CHILDREN: usize = 20;
 /// harness never sent. Background subagents legitimately outlive their
 /// parent's turn, so time is the only backstop left.
 pub const CHILD_MAX_RUNNING_SECS: i64 = 2 * 60 * 60;
+
+/// How long the `--ask` hook waits for an answer from the dashboard before it
+/// returns empty-handed and the harness draws its own dialog. The installed
+/// hook timeout must be longer than this, or the harness kills the hook
+/// first. Overridable for tests with `PERCH_ASK_TIMEOUT_SECS`.
+pub const ASK_WAIT_SECS: i64 = 59 * 60;
 
 /// What applying an event asks the caller to do next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -81,6 +87,23 @@ pub fn apply_with(
             rec.last_message = Some(one_line(reason));
             State::NeedsInput
         }
+        // A question is a `needs_input` perch knows the text of. The record
+        // keeps what was asked so the dashboard can draw a form under it.
+        Event::Question {
+            tool_use_id,
+            questions,
+        } => {
+            if let Some(first) = questions.first() {
+                rec.last_message = Some(one_line(&first.question));
+            }
+            rec.question = Some(PendingQuestion {
+                tool_use_id: tool_use_id.clone(),
+                questions: questions.clone(),
+                asked_at: now.to_string(),
+                deadline: deadline_from(now),
+            });
+            State::NeedsInput
+        }
         Event::Completed => State::Done,
         // A tool call proves the agent is running again, which is the only way
         // a `needs_input` that was answered outside perch's view clears.
@@ -114,6 +137,12 @@ pub fn apply_with(
         clear_finished_children(rec);
     }
     prune_children(rec, now);
+    // Whatever moves the pane off `needs_input` retires the question: it was
+    // answered in the pane, overtaken by a new prompt, or the session ended.
+    if next != State::NeedsInput {
+        rec.question = None;
+        rec.deferred_question = None;
+    }
 
     let changed = rec.state != next;
     if changed {
@@ -121,6 +150,11 @@ pub fn apply_with(
         rec.since = now.to_string();
     }
     let mut sound = changed.then(|| sound_for(next)).flatten();
+    // A question always chimes, even on a pane that was already blocked: it
+    // is a new thing to answer, not the same wait continuing.
+    if matches!(parsed.event, Event::Question { .. }) {
+        sound = Some("needs_input");
+    }
     // The turn ended, the job did not: the subagents it spawned are still
     // running and the pane will be woken when they finish. Chiming now would
     // send the user to a pane that is still busy. `needs_input` is untouched —
@@ -132,6 +166,33 @@ pub fn apply_with(
         parent_changed: changed,
         sound,
     }
+}
+
+/// The answer came through perch: the agent is unblocked this instant, not on
+/// its next tool call. Silent — the human did this, there is nobody to tell.
+pub fn answered(rec: &mut PaneRecord, now: &str) {
+    rec.question = None;
+    rec.deferred_question = None;
+    rec.state = State::Working;
+    rec.since = now.to_string();
+}
+
+/// `now` plus the ask wait, as RFC3339; an unparseable `now` yields itself,
+/// which reads as already expired.
+fn deadline_from(now: &str) -> String {
+    let secs = ask_wait_secs();
+    chrono::DateTime::parse_from_rfc3339(now)
+        .map(|t| (t.with_timezone(&chrono::Utc) + chrono::Duration::seconds(secs)).to_rfc3339())
+        .unwrap_or_else(|_| now.to_string())
+}
+
+/// [`ASK_WAIT_SECS`], or `PERCH_ASK_TIMEOUT_SECS` when set.
+pub fn ask_wait_secs() -> i64 {
+    std::env::var("PERCH_ASK_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.trim().parse::<i64>().ok())
+        .filter(|s| *s > 0)
+        .unwrap_or(ASK_WAIT_SECS)
 }
 
 fn sound_for(state: State) -> Option<&'static str> {

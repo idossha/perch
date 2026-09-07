@@ -91,6 +91,12 @@ pub trait Tmux {
         None
     }
 
+    /// A client's terminal size, columns by rows: what a popup on it can be
+    /// at most.
+    fn client_size(&self, _client: &str) -> Option<(u16, u16)> {
+        None
+    }
+
     /// Run several tmux commands in one invocation, separated by `;`.
     ///
     /// The hook is on the harness's critical path, so the cue is one spawned
@@ -174,6 +180,13 @@ impl Tmux for NullTmux {
             .iter()
             .find(|p| p.pane == pane)
             .map(|p| p.location(false))
+    }
+
+    /// `PERCH_FAKE_CLIENT_SIZE="200x50"` stands in for every client's size.
+    fn client_size(&self, _client: &str) -> Option<(u16, u16)> {
+        let v = std::env::var("PERCH_FAKE_CLIENT_SIZE").ok()?;
+        let (w, h) = v.trim().split_once('x')?;
+        Some((w.parse().ok()?, h.parse().ok()?))
     }
 
     /// `PERCH_FAKE_VIEWERS="%1:focused,%2"` stands in for `list-clients`:
@@ -265,6 +278,26 @@ impl Tmux for RealTmux {
             .lines()
             .filter_map(parse_client_line)
             .collect()
+    }
+
+    /// One `display -p` for the client's size.
+    fn client_size(&self, client: &str) -> Option<(u16, u16)> {
+        let out = Command::new("tmux")
+            .args([
+                "display",
+                "-p",
+                "-c",
+                client,
+                "#{client_width} #{client_height}",
+            ])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let body = String::from_utf8_lossy(&out.stdout);
+        let mut it = body.split_whitespace();
+        Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?))
     }
 
     /// One `display -p` for the location fields.

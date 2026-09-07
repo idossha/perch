@@ -1,18 +1,18 @@
 ┌perch─────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │  location  harness       state          age last message                                                             │
-│▸ luna (main)  ⚑1 ✓1                                                                                                  │
-│  luna      c┌help — any key closes─────────────────────────────────────────────────────────────────────┐             │
-│  └ Explore  │Navigate                      View                          Act                           │             │
-│  review    c│ j/k  ↓/↑  move                v         grouped / flat      x         dismiss done       │             │
-│▸ duet  ▶1   │ gg / G    top / bottom        Space     expand subagents    m         mute               │             │
-│  duet      c│ Enter     jump to pane        e         show ended          S         setup              │             │
-│  └ Explore  │ n         next waiting        r         refresh             q         quit               │             │
-│▸ perch  ▶1 ·│                               ?         close                                            │             │
-│  perch     c│                                                                                          │             │
-│  docs      c│States                                                                                    │             │
-│  1 ended, pr│ ▶ working     a turn is in progress                                                      │             │
-│             │ ▶ delegating  its turn ended, but subagents it started still run                         │             │
-│             │ ⚑ needs_input a real permission or question is blocking the agent                        │             │
+│▸ luna (main)┌help — any key closes─────────────────────────────────────────────────────────────────────┐             │
+│  luna      c│Navigate                      View                          Act                           │             │
+│  └ Explore  │ j/k  ↓/↑  move                v         grouped / flat      x         dismiss done       │             │
+│  review    c│ gg / G    top / bottom        Space     expand subagents    m         mute               │             │
+│▸ duet  ▶1   │ Enter     jump to pane        e         show ended          S         setup              │             │
+│  duet      c│ n         next waiting        r         refresh             q         quit               │             │
+│  └ Explore  │                               ?         close                                            │             │
+│▸ perch  ▶1 ·│                                                                                          │             │
+│  perch     c│States                                                                                    │             │
+│  docs      c│ ▶ working     a turn is in progress                                                      │             │
+│  1 ended, pr│ ▶ delegating  its turn ended, but subagents it started still run                         │             │
+│             │ ⚑ needs_input a permission prompt is blocking the agent                                  │             │
+│             │ ⚑ question    the agent asked you something: perch's popup, or its own dialog            │             │
 │             │ ✓ done        finished while you were elsewhere                                          │             │
 │             │ · idle        finished and seen                                                          │             │
 │             │ ✕ ended       the pane or session is gone                                                │             │

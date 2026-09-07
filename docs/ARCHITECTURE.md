@@ -40,10 +40,11 @@ pane's record and returns whether the state changed.
 | `SessionStart` | `hook_event_name: SessionStart` | `idle` | — |
 | `UserPromptSubmit` | `hook_event_name: UserPromptSubmit` | `working` | — |
 | `Stop` | `hook_event_name: Stop` | `idle` if the pane is focused, else `done` | `last_message` = `last_assistant_message` |
-| `NeedsInput` | `Notification` with `notification_type` in `permission_prompt`, `elicitation_dialog`, `elicitation_url_dialog`, `agent_needs_input`; codex `PermissionRequest` | `needs_input` | `last_message` = the notification type |
+| `NeedsInput` | `Notification` with `notification_type` in `permission_prompt`, `elicitation_dialog`, `elicitation_url_dialog`, `agent_needs_input`; codex `PermissionRequest`; codex `PreToolUse` for `request_user_input` (its question tool — detected, not answerable) | `needs_input` | `last_message` = the notification type |
 | `Completed` | `Notification` with `agent_completed` | `done` | — |
 | `ToolUse` | `PreToolUse`, or `Notification` `elicitation_complete` / `elicitation_response` | `working`, and only from `needs_input` | — |
 | `Observed` | any other `Notification` — `idle_prompt`, `auth_success`, `quota_*` | unchanged | logged only |
+| `Question` | `PreToolUse` for `AskUserQuestion` | `needs_input` | `last_message` = the first question; `question` = the whole set, with a deadline |
 | `SessionEnd` | `hook_event_name: SessionEnd` | `ended` | — |
 
 The states mean what they mean in herdr, which is where the vocabulary comes
@@ -251,6 +252,138 @@ The seen rule still applies underneath: a delegating pane's own state may flip
 `done` → `idle` because you looked at it, which is fine and invisible, since the
 effective state stays `working` until the children finish.
 
+## Questions answered from the popup
+
+Claude's `AskUserQuestion` is the one tool whose hook payload perch reads in
+full, because Claude lets a hook *answer* it: a hook that returns "allow" with
+an `updatedInput` carrying `answers` — a map from question text to the chosen
+label, multi-selects joined with `, ` — is taken as the user's answer and no
+dialog is drawn. That is the whole channel for Claude; there is no equivalent for
+permission prompts or cloud sessions. pi has no question tool at all, so
+perch's extension (`src/adapters/perch.pi.ts`) registers one, `ask_user`, with
+the same `questions` schema: its `execute` runs `perch hook pi --ask` with
+`{event: "ask_user", tool_use_id, tool_input}` on stdin and awaits stdout,
+which for pi is a bare `{"answers": …}` (`hook::ask_output` picks the shape
+from the payload); an empty stdout — handed back, timed out, perch missing —
+makes the tool fall back to pi's own `ctx.ui.select` / `ctx.ui.input`
+dialogs, so the user is always asked somewhere. Codex's own question tool,
+`request_user_input`, cannot be pre-answered (its input has no answers field;
+the answer object is produced only by its dialog) and exists only in Plan
+mode, so Codex gets the same `ask_user` tool over MCP: `perch mcp`
+(`src/mcp.rs`) is a stdio JSON-RPC server with that one tool, whose call runs
+`perch hook codex --ask` with the same `ask_user` payload and returns the
+answers as the tool result (or, when handed back, a note telling the model to
+ask in chat). `perch install codex` registers it in `config.toml`
+(`src/codex_mcp.rs`, `toml_edit`): `[mcp_servers.perch]` with `command =
+"perch"`, `args = ["mcp"]`, `env_vars` whitelisting `TMUX_PANE`, `TMUX` and
+perch's overrides — Codex strips an MCP server's environment otherwise, and
+the hook keys on the pane — and `tools.ask_user.approval_mode = "approve"` so the tool is never gated —
+`auto` reads the tool's MCP annotations, which also declare it read-only, but a
+session with `approval_policy = "never"` refuses any call it deems to need
+approval, and a question must not be refusable. `doctor` reports it as `mcp: yes/no`; `uninstall` removes
+exactly that entry. All three adapters parse the questions with
+`Question::parse_list`, and a Codex `request_user_input` that does fire is
+still recognised on its `PreToolUse` as a `NeedsInput` — detected, never
+answered.
+
+`perch install claude` adds two groups with `"matcher": "AskUserQuestion"`
+running `perch hook claude --ask`, timeout `ASK_HOOK_TIMEOUT_SECS` (an hour):
+one on `PreToolUse` and one on `PermissionRequest`. Both are needed because
+**auto mode does not run `PreToolUse` for the question tool** — verified from
+session transcripts: a default-mode session records a `PreToolUse:AskUserQuestion`
+hook run, an auto-mode session records none and goes straight to the dialog,
+where `PermissionRequest` fires. That event carries the same `tool_input` (no
+`tool_use_id`, so the id is derived from the questions: `model::question_key`)
+and accepts the same answer in its own shape, `decision.behavior: "allow"` +
+`decision.updatedInput`. `hook::ask_output` picks the shape from
+`hook_event_name`. The unmatched `PreToolUse` group still fires for that tool,
+so the variants are kept apart by one rule in `hook::run`: **the plain hook
+returns at once on a `Question`, the `--ask` hook returns at once on anything
+else.** They can never both write the record.
+
+### The popup is the dialog
+
+The one rule everything else follows: **perch holds a question exactly as long
+as its popup is on screen.** While the `--ask` hook waits, the form is up on
+every attached client (the asking pane's own client included — that is the
+dialog, right where the question was asked). Closing the form hands the
+question to Claude at once and Claude's own dialog appears in the pane. There
+is no in-between state: a pane never shows a spinner with nothing asking, the
+board never offers a second way in, and nothing that happens to the popup is
+left for later. Concretely, the `--ask` hook:
+
+1. Applies the event: `needs_input`, the question on the record with
+   `deadline = now + ASK_WAIT_SECS` (59 minutes, `PERCH_ASK_TIMEOUT_SECS` to
+   override), the chime, `@perch_state`. A question always chimes and always
+   gets its popup, even on a pane that was already `needs_input`: it is a new
+   thing to answer. It then spawns a detached `perch ask-popup --pane <pane>`
+   **instead of** the card. That opens one `display-popup` per attached client
+   running `perch ask-form --pane <pane> --client <client>` (`src/ask.rs`, the
+   same shape as `notify`): the form and nothing else, sized to its content.
+2. **Hands the question back at once** — clears it from the record and prints
+   nothing, so Claude draws its own dialog, and draws the ordinary card — when
+   any question has a kind the form has no control for (`number`), or when
+   `[ask] enabled = false` (then it does not even record it).
+3. Otherwise **blocks**, polling `answers/<pane>.json` every 100 ms until an
+   answer for this `tool_use_id` appears, the record stops carrying the
+   question (a `SessionEnd` or a new prompt came through the plain hook), or the
+   deadline passes. An answer for another `tool_use_id` is deleted and ignored.
+4. On an answer: `reducer::answered` puts the pane to `working` now, logs an
+   `answered` event, sets `@perch_state`, and prints the decision. On a defer
+   or a timeout: clears the question, remembers its key in `deferred_question`,
+   prints nothing; the pane stays `needs_input` because Claude's dialog is now
+   the thing blocking it.
+
+The popup body (`ask::form_body`) is the dashboard's `tui::Form` on its own:
+one question at a time with a tab per question across the top (`Form::goto`
+moves between them keeping every pick; `Form::advance` sends, and only from
+the last tab), a title naming project (branch) · harness · window and the
+queue behind it. `Submit` writes the answer file. **`Esc` and `p` are both
+defers** — `FormEvent::HandBack` stays put, `FormEvent::Defer` jumps to the
+pane — and every defer waits for the hook to take it (`store::defer_and_wait`)
+before anything else happens, so the tmux hooks that fire on a jump cannot
+reopen the very question being handed back. The body re-reads the record every
+250 ms, so it also moves on when the question is answered from another client,
+handed back there, or gone.
+
+**One popup per client, and a queue behind it.** The body claims
+`<state>/ask-popups/<client>` with its pid (`ask::claim_popup`; a claim whose
+pid is dead is stale), `ask-popup` skips a claimed client, and when a set is
+finished the body takes the next one from `ask::next_pending` — the oldest
+live question not already shown in this popup — in the same popup, until none
+is left. Neither `ask-popup` nor `reopen` opens a popup on a client whose
+active pane is some *other* pane blocked on input: that client is dealing with
+an agent's own dialog (the one `p` just took it to), and a popup would land on
+top of it. `perch seen` — the tmux hooks' path, i.e. every window or pane
+switch — calls `ask::reopen`, which pops the oldest live question on every
+free client without a popup, so a question that missed a busy client gets one
+once that client moves. `tui::jump_to` (`Enter`, `perch next`) opens the
+popup on the client it just moved if the target has a live question and the
+client has none (`ask::show_on_client`).
+
+Claude can ask twice for one dialog: `PreToolUse`, and — once that was handed
+back — `PermissionRequest` for the same questions. `deferred_question` (the
+question key) makes the second event return at once, or `p` would land you on
+the pane and a fresh popup would take the dialog away. The key clears when the
+pane leaves `needs_input` or a question is answered; while it is set the board
+still calls the pane a `question` (`PaneRecord::is_question`). Every `--ask`
+invocation appends one line to `<state>/ask.log` — time, pane, hook event,
+tool, permission mode, and what perch did — so a question that never reached
+the popup can be explained.
+
+**Size.** `ask::popup_size` measures the content: width from the longest
+question or label-plus-description line, between 60 and 110 columns; height
+from `tui::form_rows` at that width — tab row, the question word-wrapped, a
+blank, one row per option plus its description wrapped under itself, the Other
+row, a blank, the key hints — plus the border. The client's own size
+(`Tmux::client_size`, one `display -p -c`) caps both with a margin, so the
+popup always fits the screen it is drawn on and nothing inside it is cut.
+
+This is the one place a hook process outlives its event, and it is the harness
+that owns the wait: the process is Claude's own hook, alive exactly as long as
+Claude would otherwise be showing a dialog, and killed by Claude's timeout if
+perch's own deadline somehow fails. No daemon, no socket: the answer is a file.
+
 ## State directory
 
 `~/.local/state/perch/`, overridable with `PERCH_STATE_DIR`:
@@ -261,6 +394,9 @@ panes/.%12.<pid>.tmp  transient; the write in progress
 events.jsonl          append-only log: ts, pane, harness, event, state, session_id
 events.jsonl.1        the previous log, rotated at 5 MB
 mute                  presence = globally muted
+answers/%12.json      an answer (or a defer) on its way from a popup to a waiting --ask hook
+ask-popups/<client>   pid of the popup body holding that client, while one is up
+ask.log               one line per --ask hook invocation: what perch did with each question
 ```
 
 A record is `{pane, harness, session_id, cwd, project, branch, location, state,
@@ -439,7 +575,9 @@ never wrong about liveness in the direction of claiming a dead pane is alive.
 ## Invariants
 
 1. **No daemon.** Nothing runs between commands. State is files; the hook is
-   the only writer on the hot path.
+   the only writer on the hot path. The `--ask` hook waits, but it is the
+   harness's own hook process, alive only while the harness would otherwise be
+   showing a dialog.
 2. **No session ownership.** perch never creates, kills, resizes or attaches a
    pane, session or worktree. The only tmux writes are `set-option -p
    @perch_state` on a pane and `switch-client -c <client> -t <pane>` when the
@@ -477,6 +615,7 @@ command can be neutered without config.
 | `PERCH_CODEX_HOOKS` | target file for `perch install codex` |
 | `PERCH_CODEX_CONFIG` | codex config holding the hook trust records |
 | `PERCH_DUMP_HOOK_INPUT` | directory to copy every raw hook payload into |
+| `PERCH_ASK_TIMEOUT_SECS` | how long `perch hook claude --ask` waits for an answer (default 59 min) |
 | `PERCH_PI_EXT_DIR` | directory for `perch install pi` |
 | `PERCH_TMUX_CONF` | target file for the `source-file` line |
 

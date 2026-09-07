@@ -105,3 +105,38 @@ fn subagent_events_carry_the_agent_id() {
 fn payload_without_an_event_name_is_an_error() {
     assert!(adapters::parse(Harness::Codex, &serde_json::json!({})).is_err());
 }
+
+/// Codex's question tool is `request_user_input`. Codex hooks have no return
+/// path for an answer, so perch cannot answer it — but the pane is blocked on
+/// the human the moment the tool is called, and that is a `needs_input`.
+#[test]
+fn a_request_user_input_pre_tool_use_is_needs_input() {
+    let p = parse("pre_tool_use_request_user_input.json").unwrap();
+    assert_eq!(
+        p.event,
+        Event::NeedsInput {
+            reason: "request_user_input".into()
+        }
+    );
+    // Any other tool is still just proof of running.
+    assert_eq!(parse("pre_tool_use.json").unwrap().event, Event::ToolUse);
+}
+
+/// Codex cannot have its own question dialog answered by a hook, so perch
+/// gives it an `ask_user` MCP tool; the tool's payload to
+/// `perch hook codex --ask` is the same question set Claude sends.
+#[test]
+fn an_ask_user_payload_is_a_question() {
+    let p = parse("ask_user.json").unwrap();
+    let Event::Question {
+        tool_use_id,
+        questions,
+    } = p.event
+    else {
+        panic!("not a question: {:?}", p.event);
+    };
+    assert_eq!(tool_use_id, "mcp-7");
+    assert_eq!(questions.len(), 2);
+    assert_eq!(questions[1].header, "Harnesses");
+    assert!(questions[1].multi_select);
+}

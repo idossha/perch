@@ -102,3 +102,65 @@ fn an_unchanged_state_chimes_nothing() {
     assert_eq!(out.sound, None);
     assert_eq!(r.since, "t1", "since moves only on a real change");
 }
+
+fn question() -> ParsedEvent {
+    ev(Event::Question {
+        tool_use_id: "toolu_1".into(),
+        questions: vec![perch::model::Question {
+            question: "Which backend?".into(),
+            header: "Backend".into(),
+            kind: "choice".into(),
+            options: vec![perch::model::QuestionOption {
+                label: "Files".into(),
+                description: String::new(),
+            }],
+            multi_select: false,
+        }],
+    })
+}
+
+/// A question is a `needs_input` like any other — same state, same chime —
+/// and the record carries what was asked, with a deadline, so the dashboard
+/// can put a form under it while the hook is still waiting.
+#[test]
+fn a_question_is_needs_input_that_remembers_what_was_asked() {
+    let mut r = rec();
+    let now = chrono::Utc::now().to_rfc3339();
+    let out = apply_with(&mut r, &question(), &now, false);
+    assert_eq!(r.state, State::NeedsInput);
+    assert_eq!(out.sound, Some("needs_input"));
+    assert!(out.parent_changed);
+    assert_eq!(r.last_message.as_deref(), Some("Which backend?"));
+    let q = r.question.as_ref().expect("the question is on the record");
+    assert_eq!(q.tool_use_id, "toolu_1");
+    assert_eq!(q.questions[0].header, "Backend");
+    assert!(q.is_live(chrono::Utc::now()), "fresh, so still answerable");
+    let far = chrono::Utc::now() + chrono::Duration::seconds(perch::reducer::ASK_WAIT_SECS + 5);
+    assert!(!q.is_live(far), "past the hook's own deadline it is stale");
+}
+
+/// Whatever moves the pane off `needs_input` retires the question: a tool
+/// call after a native answer, a new prompt, the session ending.
+#[test]
+fn leaving_needs_input_by_any_path_drops_the_question() {
+    for leave in [Event::ToolUse, Event::UserPromptSubmit, Event::SessionEnd] {
+        let mut r = rec();
+        apply_with(&mut r, &question(), "t1", false);
+        assert!(r.question.is_some());
+        apply_with(&mut r, &ev(leave.clone()), "t2", false);
+        assert_ne!(r.state, State::NeedsInput, "{leave:?}");
+        assert!(r.question.is_none(), "{leave:?}");
+    }
+}
+
+/// The hook's own answer path: the agent is unblocked by perch, so the pane
+/// is working again this instant, not on the next tool call.
+#[test]
+fn an_answer_puts_the_pane_back_to_work_and_is_silent() {
+    let mut r = rec();
+    apply_with(&mut r, &question(), "t1", false);
+    perch::reducer::answered(&mut r, "t2");
+    assert_eq!(r.state, State::Working);
+    assert_eq!(r.since, "t2");
+    assert!(r.question.is_none());
+}

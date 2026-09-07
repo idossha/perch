@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-07
+
+### Added
+
+- **Answer Claude's questions where you are.** When Claude asks you something
+  with its question tool (`AskUserQuestion` — what the `ask-user` skill
+  drives), the answer form pops up in the middle of your screen on every
+  attached client, the asking pane included: one tab per question, pick an
+  option, tick several, or type an `Other…` answer, move back and forth
+  between the tabs, and `Enter` on the last one sends. The answers go back to
+  Claude exactly as if you had clicked them. The popup is the dialog: close it
+  (`Esc`, or `p` to close and jump to the pane) and Claude's own dialog appears
+  at once, so a pane never looks busy while nothing is asking. The title names
+  the project and branch, the harness and the pane's window; several agents
+  asking at once queue up, one popup per client, `+N waiting` in the title,
+  the next set in the same popup when the first is done. The popup is sized to
+  its content, wrapping long questions and descriptions. The board shows such
+  a pane as `⚑ question` and `Enter` jumps to it. Works in default and in auto
+  mode (auto mode fires a different hook for the question tool, and both are
+  installed). pi and Codex get a question tool of their own from perch —
+  `ask_user`, from perch's pi extension and from a small MCP server (`perch
+  mcp`) that setup registers in Codex's config — answered through the same
+  popup in every mode (pi's own dialog, or a chat question, as the fallback).
+  A Codex `request_user_input` call is still recognised as `needs_input`
+  (Codex hooks cannot carry an answer back). A skill, `skills/ask-user`,
+  teaches agents to ask through the question tool in the shape the popup shows
+  best, and replaces plan-interview skills like grill-me.
+  `~/.local/state/perch/ask.log` records what perch did with every question.
+  `[ask] enabled = false` turns it off. **Run `perch setup` once after
+  upgrading**: the feature is two hook entries, matched to that one tool, with
+  a one-hour timeout.
+
+### Fixed
+
+- **Codex no longer warns at every start** about perch's `SessionEnd` hook:
+  Codex clamps that hook to three seconds, so it is installed at three, and a
+  `perch setup` re-run brings an older install's entry down to it (and refreshes
+  its trust record) instead of leaving it.
+
 ## [0.3.0] - 2026-09-06
 
 ### Added
@@ -251,4 +290,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Sound and desktop notifications are macOS-only.
 - Nothing is tracked outside tmux: with no `$TMUX_PANE`, the hook is a no-op.
 
-[Unreleased]: https://github.com/idohaber/perch/compare/main...HEAD
+[Unreleased]: https://github.com/idossha/perch/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/idossha/perch/compare/v0.3.0...v0.4.0

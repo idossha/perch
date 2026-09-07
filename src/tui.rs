@@ -20,7 +20,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::{Frame, Terminal};
 
-use crate::model::{PaneRecord, State, Subagent};
+use crate::model::{Answer, PaneRecord, PendingQuestion, Question, State, Subagent};
 use crate::sound;
 use crate::store;
 use crate::tmux::{LivePane, Tmux};
@@ -136,6 +136,8 @@ pub fn state_glyph(state: State, tick: u64) -> &'static str {
 pub fn state_word(rec: &PaneRecord) -> &'static str {
     if rec.is_delegating() {
         "delegating"
+    } else if rec.is_question() {
+        "question"
     } else {
         rec.state.as_str()
     }
@@ -248,6 +250,207 @@ pub struct App {
     /// `PERCH_DEBUG=1`: show the pane id beside the location. Read once, at
     /// construction, so rendering stays a pure function of the app.
     pub debug: bool,
+    /// The answer form, while one is open — in the popup body only; the
+    /// board never opens one.
+    pub form: Option<Form>,
+    /// Other agents' question sets queued behind the open form (popup only).
+    pub waiting: usize,
+}
+
+// ---------------------------------------------------------------- form
+
+/// The answer form for one pane's pending question set.
+///
+/// One question at a time. A `choice` question lists its options plus an
+/// `Other…` row that opens a text line; a `text` question is only the line.
+/// Answers are keyed by question text, the shape Claude's tool expects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Form {
+    pub pane: String,
+    pub tool_use_id: String,
+    pub questions: Vec<Question>,
+    /// Which question is on screen.
+    pub index: usize,
+    /// Row under the cursor: an option index, or `options.len()` for Other.
+    pub cursor: usize,
+    /// Ticked options per question.
+    pub picked: Vec<HashSet<usize>>,
+    /// Free text per question, when Other was used.
+    pub other: Vec<Option<String>>,
+    /// The Other line is open and taking characters.
+    pub typing: bool,
+    pub text: String,
+}
+
+/// What a key did to the form, for the popup body to act on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FormEvent {
+    None,
+    /// Every question visited: this is the answer to write.
+    Submit(Answer),
+    /// `p`: hand the question to the harness's own dialog and jump there.
+    Defer(Answer),
+    /// `Esc`: hand the question to the harness's own dialog, stay here.
+    HandBack(Answer),
+}
+
+impl Form {
+    pub fn new(pane: &str, q: &PendingQuestion) -> Form {
+        let n = q.questions.len();
+        Form {
+            pane: pane.to_string(),
+            tool_use_id: q.tool_use_id.clone(),
+            questions: q.questions.clone(),
+            index: 0,
+            cursor: 0,
+            picked: vec![HashSet::new(); n],
+            other: vec![None; n],
+            typing: false,
+            text: String::new(),
+        }
+    }
+
+    pub fn current(&self) -> &Question {
+        &self.questions[self.index]
+    }
+
+    /// Rows on screen for the current question: its options and Other.
+    fn rows(&self) -> usize {
+        self.current().options.len() + 1
+    }
+
+    fn on_other(&self) -> bool {
+        self.cursor >= self.current().options.len()
+    }
+
+    /// `true` when the question at `i` has an answer of any kind.
+    pub fn answered(&self, i: usize) -> bool {
+        self.other[i].as_ref().is_some_and(|t| !t.trim().is_empty()) || !self.picked[i].is_empty()
+    }
+
+    /// Show question `i`, the cursor on its first pick (or the top). Moving
+    /// between tabs is not sending: past either edge stays put.
+    fn goto(&mut self, i: usize) {
+        if i >= self.questions.len() {
+            return;
+        }
+        self.typing = false;
+        self.text.clear();
+        self.index = i;
+        self.cursor = self.picked[i].iter().min().copied().unwrap_or(0);
+    }
+
+    /// Move on to the next question, or submit after the last one.
+    fn advance(&mut self) -> FormEvent {
+        self.typing = false;
+        self.text.clear();
+        if self.index + 1 < self.questions.len() {
+            self.goto(self.index + 1);
+            return FormEvent::None;
+        }
+        FormEvent::Submit(self.answer())
+    }
+
+    /// The answers so far: free text wins over ticks; a multi-select is its
+    /// labels in option order joined by `, `; an untouched question is absent.
+    pub fn answer(&self) -> Answer {
+        let mut answers = std::collections::BTreeMap::new();
+        for (i, q) in self.questions.iter().enumerate() {
+            if let Some(t) = self.other[i].as_ref().filter(|t| !t.trim().is_empty()) {
+                answers.insert(q.question.clone(), t.trim().to_string());
+                continue;
+            }
+            let labels: Vec<&str> = q
+                .options
+                .iter()
+                .enumerate()
+                .filter(|(oi, _)| self.picked[i].contains(oi))
+                .map(|(_, o)| o.label.as_str())
+                .collect();
+            if !labels.is_empty() {
+                answers.insert(q.question.clone(), labels.join(", "));
+            }
+        }
+        Answer {
+            pane: self.pane.clone(),
+            tool_use_id: self.tool_use_id.clone(),
+            answers,
+            defer: false,
+        }
+    }
+
+    /// One key, in the form's own contract.
+    pub fn key(&mut self, code: KeyCode) -> FormEvent {
+        if self.typing {
+            return match code {
+                KeyCode::Char(c) => {
+                    self.text.push(c);
+                    FormEvent::None
+                }
+                KeyCode::Backspace => {
+                    self.text.pop();
+                    FormEvent::None
+                }
+                KeyCode::Esc => {
+                    self.typing = false;
+                    self.text.clear();
+                    FormEvent::None
+                }
+                KeyCode::Enter => {
+                    let t = std::mem::take(&mut self.text);
+                    self.other[self.index] = (!t.trim().is_empty()).then_some(t);
+                    self.advance()
+                }
+                _ => FormEvent::None,
+            };
+        }
+        let rows = self.rows();
+        match code {
+            KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => self.goto(self.index + 1),
+            KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') => {
+                if self.index > 0 {
+                    self.goto(self.index - 1);
+                }
+            }
+            KeyCode::Char('j') | KeyCode::Down => self.cursor = (self.cursor + 1) % rows,
+            KeyCode::Char('k') | KeyCode::Up => self.cursor = (self.cursor + rows - 1) % rows,
+            KeyCode::Char('g') => self.cursor = 0,
+            KeyCode::Char('G') => self.cursor = rows - 1,
+            KeyCode::Char(' ') if !self.on_other() => {
+                let multi = self.current().multi_select;
+                let set = &mut self.picked[self.index];
+                if multi {
+                    if !set.remove(&self.cursor) {
+                        set.insert(self.cursor);
+                    }
+                } else {
+                    set.clear();
+                    set.insert(self.cursor);
+                }
+            }
+            KeyCode::Enter => {
+                if self.on_other() {
+                    self.typing = true;
+                    self.text = self.other[self.index].clone().unwrap_or_default();
+                    return FormEvent::None;
+                }
+                if !self.current().multi_select {
+                    let set = &mut self.picked[self.index];
+                    set.clear();
+                    set.insert(self.cursor);
+                }
+                return self.advance();
+            }
+            KeyCode::Esc => {
+                return FormEvent::HandBack(Answer::defer(&self.pane, &self.tool_use_id));
+            }
+            KeyCode::Char('p') => {
+                return FormEvent::Defer(Answer::defer(&self.pane, &self.tool_use_id));
+            }
+            _ => {}
+        }
+        FormEvent::None
+    }
 }
 
 impl App {
@@ -268,6 +471,56 @@ impl App {
             theme: DARK,
             tick: 0,
             debug: false,
+            form: None,
+            waiting: 0,
+        }
+    }
+
+    /// The question under the cursor that can still be answered from here.
+    pub fn live_question_at(&self, now: DateTime<Utc>) -> Option<(&PaneRecord, &PendingQuestion)> {
+        let rec = self.current()?;
+        rec.live_question(now).map(|q| (rec, q))
+    }
+
+    /// `a`: open the form for the selected pane's question, if it has one.
+    pub fn open_form(&mut self) {
+        self.open_form_at(Utc::now());
+    }
+
+    pub fn open_form_at(&mut self, now: DateTime<Utc>) {
+        if let Some((rec, q)) = self.live_question_at(now) {
+            self.form = Some(Form::new(&rec.pane, q));
+        }
+    }
+
+    /// One key while the form is open. `Submit` and `Defer` close it; the
+    /// caller writes the answer. `Cancel` closes it and leaves the question.
+    pub fn form_key(&mut self, code: KeyCode) -> FormEvent {
+        let Some(form) = self.form.as_mut() else {
+            return FormEvent::None;
+        };
+        let ev = form.key(code);
+        if ev != FormEvent::None {
+            self.form = None;
+        }
+        ev
+    }
+
+    /// Close the form if its question is no longer on the record: answered
+    /// from another client, handed back, overtaken, or expired.
+    fn sync_form(&mut self) {
+        let now = Utc::now();
+        let Some(f) = self.form.as_ref() else {
+            return;
+        };
+        let still = self
+            .records
+            .iter()
+            .find(|r| r.pane == f.pane)
+            .and_then(|r| r.live_question(now))
+            .is_some_and(|q| q.tool_use_id == f.tool_use_id);
+        if !still {
+            self.form = None;
         }
     }
 
@@ -545,6 +798,7 @@ impl App {
         self.records = records;
         self.tick = self.tick.wrapping_add(1);
         self.normalize();
+        self.sync_form();
     }
 
     /// [`App::refresh`] with the pane list that snapshot reconciled against.
@@ -958,7 +1212,7 @@ pub const HELP_SECTIONS: [(&str, &[(&str, &str)]); 3] = [
 /// One line per state: the state whose glyph and colour to use, the word
 /// shown, and what it actually means. `delegating` is `working` in effect,
 /// so it borrows that row's look.
-pub const HELP_LEGEND: [(State, &str, &str); 6] = [
+pub const HELP_LEGEND: [(State, &str, &str); 7] = [
     (State::Working, "working", "a turn is in progress"),
     (
         State::Working,
@@ -968,7 +1222,12 @@ pub const HELP_LEGEND: [(State, &str, &str); 6] = [
     (
         State::NeedsInput,
         "needs_input",
-        "a real permission or question is blocking the agent",
+        "a permission prompt is blocking the agent",
+    ),
+    (
+        State::NeedsInput,
+        "question",
+        "the agent asked you something: perch's popup, or its own dialog",
     ),
     (State::Done, "done", "finished while you were elsewhere"),
     (State::Idle, "idle", "finished and seen"),
@@ -1047,6 +1306,264 @@ fn help_overlay(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(t.accent))
                 .title(Span::styled("help — any key closes", title)),
+        ),
+        rect,
+    );
+}
+
+/// Word-wrap `text` to `width` columns; a word longer than the width is cut.
+/// Never returns an empty list: an empty text is one empty line.
+pub fn wrap(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut out: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let mut word: String = word
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect();
+        while word.chars().count() > width {
+            if !line.is_empty() {
+                out.push(std::mem::take(&mut line));
+            }
+            let head: String = word.chars().take(width).collect();
+            word = word.chars().skip(width).collect();
+            out.push(head);
+        }
+        let need = word.chars().count() + usize::from(!line.is_empty());
+        if line.chars().count() + need > width && !line.is_empty() {
+            out.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(&word);
+    }
+    if !line.is_empty() || out.is_empty() {
+        out.push(line);
+    }
+    out
+}
+
+/// Width of the option labels column for a question.
+fn label_width(q: &Question) -> usize {
+    q.options
+        .iter()
+        .map(|o| o.label.chars().count())
+        .max()
+        .unwrap_or(0)
+        .clamp(5, 24)
+}
+
+/// Indent of an option's description: marker, glyph, label, gap.
+fn desc_indent(q: &Question) -> usize {
+    2 + 2 + label_width(q) + 2
+}
+
+/// Rows one question needs inside a form `width` columns wide (border
+/// included in `width`, excluded from the count): the tab row, the wrapped
+/// question, a blank, one row per option plus wrapped description overflow,
+/// the Other row, a blank, and the key hints. The popup is sized from this,
+/// so nothing is cut.
+pub fn form_rows(q: &Question, width: usize) -> usize {
+    let inner = width.saturating_sub(4).max(10);
+    let mut rows = 1 + wrap(&q.question, inner).len() + 1;
+    let desc_w = inner.saturating_sub(desc_indent(q)).max(10);
+    for o in &q.options {
+        rows += wrap(&o.description, desc_w).len().max(1);
+    }
+    rows + 1 + 1 + 1
+}
+
+/// The form, filling the frame: the popup body's whole screen.
+pub fn render_form(f: &mut Frame, app: &App) {
+    form_box(f, app, f.area());
+}
+
+/// [`render_form`] offscreen, as text, for tests.
+pub fn render_form_to_string(app: &App, w: u16, h: u16) -> String {
+    let mut term = Terminal::new(ratatui::backend::TestBackend::new(w, h))
+        .expect("TestBackend never fails to build");
+    term.draw(|f| render_form(f, app)).expect("offscreen draw");
+    let buf = term.backend().buffer().clone();
+    let mut out = String::new();
+    for y in 0..buf.area.height {
+        let line: String = (0..buf.area.width)
+            .map(|x| buf[(x, y)].symbol().to_string())
+            .collect();
+        out.push_str(line.trim_end());
+        out.push('\n');
+    }
+    out
+}
+
+/// The form box, filling `area`.
+fn form_box(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let Some(form) = app.form.as_ref() else {
+        return;
+    };
+    let t = &app.theme;
+    let q = form.current();
+    let title_style = Style::default().fg(t.accent).add_modifier(Modifier::BOLD);
+    let text = Style::default().fg(t.text);
+    let dim = Style::default().fg(t.dim);
+    let pick = Style::default()
+        .fg(t.needs_input)
+        .add_modifier(Modifier::BOLD);
+
+    let width = area.width as usize;
+    let inner = width.saturating_sub(4);
+    // The tab row: every question's header, the current one lit, answered
+    // ones ticked. This is how you see there is more, and go back.
+    let mut tabs: Vec<Span> = Vec::new();
+    for (i, question) in form.questions.iter().enumerate() {
+        let name = if question.header.is_empty() {
+            format!("{}", i + 1)
+        } else {
+            question.header.clone()
+        };
+        let label = if form.answered(i) {
+            format!(" {name} ✓ ")
+        } else {
+            format!(" {name} ")
+        };
+        let style = if i == form.index {
+            title_style.add_modifier(Modifier::REVERSED)
+        } else if form.answered(i) {
+            text
+        } else {
+            dim
+        };
+        tabs.push(Span::styled(label, style));
+        tabs.push(Span::raw(" "));
+    }
+    // Position at the right end of the tab row.
+    let pos = format!("{}/{}", form.index + 1, form.questions.len());
+    let used: usize = tabs.iter().map(|s| s.content.chars().count()).sum();
+    tabs.push(Span::styled(
+        format!("{:>w$}", pos, w = inner.saturating_sub(used).max(pos.len())),
+        dim,
+    ));
+    let mut lines: Vec<Line> = vec![Line::from(tabs)];
+    for l in wrap(&q.question, inner) {
+        lines.push(Line::from(Span::styled(l, text)));
+    }
+    lines.push(Line::from(""));
+    let label_w = label_width(q);
+    let desc_w = inner.saturating_sub(desc_indent(q)).max(10);
+    for (i, o) in q.options.iter().enumerate() {
+        let on = form.picked[form.index].contains(&i);
+        let glyph = match (q.multi_select, on) {
+            (true, true) => "◼",
+            (true, false) => "◻",
+            (false, true) => "●",
+            (false, false) => "○",
+        };
+        let here = i == form.cursor && !form.typing;
+        let marker = if here { "▌ " } else { "  " };
+        let label_style = if here {
+            text.add_modifier(Modifier::REVERSED)
+        } else {
+            text
+        };
+        // The description wraps under itself, so a long one is read in full
+        // rather than cut; the popup is sized for it (`form_rows`).
+        let mut desc = wrap(&o.description, desc_w).into_iter();
+        lines.push(Line::from(vec![
+            Span::styled(marker.to_string(), Style::default().fg(t.accent)),
+            Span::styled(format!("{glyph} "), if on { pick } else { dim }),
+            Span::styled(fit(&o.label, label_w), label_style),
+            Span::styled(format!("  {}", desc.next().unwrap_or_default()), dim),
+        ]));
+        for more in desc {
+            lines.push(Line::from(Span::styled(
+                format!("{}{more}", " ".repeat(desc_indent(q))),
+                dim,
+            )));
+        }
+    }
+    // The Other row, or the text line it opens.
+    let on_other = form.cursor >= q.options.len();
+    let other_label = if q.options.is_empty() {
+        "Type an answer"
+    } else {
+        "Other…"
+    };
+    if form.typing {
+        lines.push(Line::from(vec![
+            Span::styled("▌ ".to_string(), Style::default().fg(t.accent)),
+            Span::styled("▶ ", pick),
+            Span::styled(
+                fit(
+                    &format!("{}_", one_line(&form.text, inner.saturating_sub(6))),
+                    inner.saturating_sub(4),
+                ),
+                text,
+            ),
+        ]));
+    } else {
+        let marker = if on_other { "▌ " } else { "  " };
+        let style = if on_other {
+            text.add_modifier(Modifier::REVERSED)
+        } else {
+            dim
+        };
+        let typed = form.other[form.index]
+            .as_deref()
+            .map(|s| format!("  {}", one_line(s, inner.saturating_sub(14))))
+            .unwrap_or_default();
+        lines.push(Line::from(vec![
+            Span::styled(marker.to_string(), Style::default().fg(t.accent)),
+            Span::styled("○ ".to_string(), dim),
+            Span::styled(fit(other_label, label_w), style),
+            Span::styled(typed, dim),
+        ]));
+    }
+    lines.push(Line::from(""));
+    let keys = if form.typing {
+        "Enter done   Esc back"
+    } else if form.index + 1 == form.questions.len() {
+        if q.multi_select {
+            "Enter send   Space toggle   ←/→ tabs   p answer in its pane   Esc leave it to the agent"
+        } else {
+            "Enter send   ←/→ tabs   p answer in its pane   Esc leave it to the agent"
+        }
+    } else if q.multi_select {
+        "Enter next   Space toggle   ←/→ tabs   p answer in its pane   Esc leave it to the agent"
+    } else {
+        "Enter select   ←/→ tabs   p answer in its pane   Esc leave it to the agent"
+    };
+    lines.push(Line::from(Span::styled(keys.to_string(), dim)));
+
+    // Whose question: project (branch) · harness · where the pane is, so two
+    // sessions asking at once are told apart at a glance; then the queue.
+    let title = match app.records.iter().find(|r| r.pane == form.pane) {
+        Some(rec) => {
+            let mut parts = vec![match (&rec.project, &rec.branch) {
+                (Some(p), Some(b)) if !b.is_empty() => format!("{p} ({b})"),
+                (Some(p), _) => p.clone(),
+                _ => project_of(rec),
+            }];
+            parts.push(rec.harness.as_str().to_string());
+            if let Some(loc) = rec.location.as_ref().filter(|l| !l.is_empty()) {
+                parts.push(loc.clone());
+            }
+            let mut t = format!("⚑ {}", parts.join(" · "));
+            if app.waiting > 0 {
+                t.push_str(&format!(" · +{} waiting", app.waiting));
+            }
+            t
+        }
+        None => "⚑ question".to_string(),
+    };
+    let rect = area;
+    f.render_widget(ratatui::widgets::Clear, rect);
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(t.needs_input))
+                .title(Span::styled(title, title_style)),
         ),
         rect,
     );
@@ -1316,6 +1833,17 @@ pub fn jump_to(tmux: &dyn Tmux, client: &str, pane: &str) -> std::result::Result
         return Err(format!("tmux refused the jump to {pane}"));
     }
     crate::hook::seen(pane);
+    // A question perch is holding stays perch's: the popup comes along, over
+    // the pane you just arrived at, so you answer it there or hand it to
+    // Claude with `p` on purpose. This is deliberate even for a question put
+    // away with Esc — jumping to the pane is asking for it — and it is the
+    // one thing that keeps `a` working after you have looked and left.
+    if store::load(pane)
+        .and_then(|r| r.live_question(Utc::now()).cloned())
+        .is_some()
+    {
+        crate::ask::show_on_client(tmux, pane, client);
+    }
     Ok(())
 }
 
