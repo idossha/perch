@@ -847,7 +847,10 @@ impl App {
         let w = self
             .records
             .iter()
-            .map(|r| r.model_cell().chars().count())
+            .flat_map(|r| {
+                std::iter::once(r.model_cell().chars().count())
+                    .chain(r.children.iter().map(|c| c.model_cell().chars().count()))
+            })
             .max()
             .unwrap_or(0);
         if w == 0 {
@@ -1153,10 +1156,13 @@ fn child_line(
     ci: usize,
     selected: bool,
     now: DateTime<Utc>,
-    label_w: usize,
-    msg_w: usize,
+    c: Cols,
 ) -> Line<'static> {
     let kid = &app.records[i].children[ci];
+    // The name spans the location, project and harness columns; the model
+    // sits in the model column, under the parent's.
+    let label_w = c.loc + c.project + c.harness;
+    let msg_w = c.msg;
     let t = &app.theme;
     let name = kid
         .agent_type
@@ -1176,6 +1182,7 @@ fn child_line(
     Line::from(vec![
         Span::styled(marker.to_string(), Style::default().fg(t.accent)),
         Span::styled(fit(&label, label_w), lstyle),
+        Span::styled(fit(&kid.model_cell(), c.model), Style::default().fg(t.dim)),
         Span::styled(
             fit(
                 &format!("{} {}", state_glyph(kid.state, 0), kid.state.as_str()),
@@ -1681,15 +1688,7 @@ pub fn render(f: &mut Frame, app: &App, now: DateTime<Utc>) {
                 Span::styled(counts_label(app, members), Style::default().fg(t.dim)),
             ]),
             RowKind::Pane(i) => pane_line(app, *i, selected, now, cols),
-            RowKind::Child(i, ci) => child_line(
-                app,
-                *i,
-                *ci,
-                selected,
-                now,
-                cols.loc + cols.project + cols.harness + cols.model,
-                cols.msg,
-            ),
+            RowKind::Child(i, ci) => child_line(app, *i, *ci, selected, now, cols),
             RowKind::EndedNote(k) => Line::from(Span::styled(
                 format!("  {k} ended, press e to show"),
                 Style::default().fg(t.ended).add_modifier(Modifier::DIM),

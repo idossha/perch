@@ -192,6 +192,7 @@ none of it moves when only a colour changes.
 | `gone_pane_120x24.txt` | the inline `pane %9 is gone` error line |
 | `debug_ids_120x24.txt` | `PERCH_DEBUG=1`: pane ids beside the location |
 | `model_column_120x24.txt` | the `model` column once panes have reported a model |
+| `child_models_120x24.txt` | subagent rows carry their own model under the parent's; an unknown one is blank |
 | `e2e_dashboard_120x40.txt` | the real binary, in a real 120x40 tmux pane, read back with `capture-pane` (`tests/e2e_tui_render.rs`) |
 
 **Policy.** Comparison is verbatim, and re-blessing is never a passing run:
@@ -282,6 +283,7 @@ tests that merely execute the code.
 | Codex: the `model` slug on any payload | `adapter_codex::the_model_slug_is_read_from_any_payload` |
 | pi: `model` and `effort` from the extension's payload, which sends `ctx.model.id` | `adapter_pi::model_and_effort_come_from_the_extension_payload` |
 | Ids shorten to labels (`claude-fable-5-1` → `fable 5.1`, `gpt-5.6-sol` → `gpt 5.6 sol`, `claude-opus-5[1m]` → `opus 5`) | `reducer_rules::model_ids_become_short_labels` |
+| Claude subagent: `model` read from `<session>/subagents/agent-<id>.jsonl` on the child's first tool call after it has answered; blank before; the parent's own `model` untouched | `hook_end_to_end::a_subagents_model_is_read_from_its_transcript` |
 | The board's `model` column shows label + effort, or nothing, and appears only once some pane has a model; the popup title carries it | `tui_render::the_model_column_shows_the_label_and_effort_or_nothing`, `golden::model_column_120x24`, `ask_form::the_form_title_includes_the_model_when_known` |
 
 ### Seen

@@ -40,6 +40,7 @@ fn kid(id: &str, agent_type: Option<&str>, state: State, msg: &str) -> Subagent 
         state,
         since: Utc::now().to_rfc3339(),
         last_message: Some(msg.into()),
+        model: None,
     }
 }
 

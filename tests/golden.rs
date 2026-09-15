@@ -48,6 +48,7 @@ fn kid(id: &str, agent_type: &str, state: State, age: i64, msg: &str) -> Subagen
         state,
         since: ago(age),
         last_message: (!msg.is_empty()).then(|| msg.to_string()),
+        model: None,
     }
 }
 
@@ -239,6 +240,26 @@ fn model_column_120x24() {
     app.normalize();
     golden(
         "model_column_120x24",
+        &render_to_string(&app, 120, 24, now()),
+    );
+}
+
+/// A subagent's model shows in the model column under its parent's: an
+/// orchestrator on one model can fan out to children on others, and a child
+/// whose model is not yet known leaves the cell blank.
+#[test]
+fn child_models_120x24() {
+    let mut app = board();
+    let duet = app.records.iter().position(|r| r.pane == "%5").unwrap();
+    app.records[duet].model = Some("claude-opus-5[1m]".into());
+    app.records[duet].effort = Some("low".into());
+    app.records[duet].children[0].model = Some("claude-fable-5-1".into());
+    app.records[duet].children[1].model = Some("claude-sonnet-5".into());
+    app.records[duet].children[2].model = Some("claude-haiku-4-5-20251001".into());
+    app.expanded.insert("%5".into());
+    app.normalize();
+    golden(
+        "child_models_120x24",
         &render_to_string(&app, 120, 24, now()),
     );
 }

@@ -86,6 +86,10 @@ pub fn parse(raw: &serde_json::Value) -> anyhow::Result<Option<ParsedEvent>> {
                 None => Event::ToolUse,
             },
         },
+        // A subagent's own tool call moves nothing, but it is the first
+        // moment its transcript exists: the hook uses it to learn the
+        // child's model while it is still running.
+        "PreToolUse" | "PostToolUse" => Event::ToolUse,
         // The session's model changed: no state moves, but the record learns
         // the new model from `to_model`.
         "PostModelSwitch" if agent_id.is_none() => Event::Observed {
@@ -117,6 +121,69 @@ pub fn parse(raw: &serde_json::Value) -> anyhow::Result<Option<ParsedEvent>> {
         model,
         effort,
     }))
+}
+
+/// The model a subagent runs, read from its own transcript.
+///
+/// No Claude hook payload names a subagent's model, but each of the
+/// subagent's assistant messages does, in the transcript Claude writes under
+/// the parent session's directory as `subagents/agent-<id>.jsonl`. The
+/// payload's `transcript_path` is the parent's `<session>.jsonl` or the
+/// subagent's own file; both are resolved. The scan stops at the first
+/// assistant line, so it costs one short read. `None` before the subagent
+/// has answered once, or when the file is elsewhere.
+pub fn subagent_model(raw: &serde_json::Value) -> Option<String> {
+    let agent_id = str_field(raw, "agent_id")?;
+    let path = std::path::PathBuf::from(str_field(raw, "transcript_path")?);
+    let path = if path
+        .file_name()
+        .and_then(|f| f.to_str())
+        .is_some_and(|f| f.starts_with("agent-"))
+    {
+        path
+    } else {
+        path.with_extension("")
+            .join("subagents")
+            .join(format!("agent-{agent_id}.jsonl"))
+    };
+    model_in_transcript(&path)
+}
+
+/// The `message.model` of the first assistant line in a transcript file.
+pub fn model_in_transcript(path: &std::path::Path) -> Option<String> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(path).ok()?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut line = String::new();
+    // A fork's first user line carries the whole parent context; the cap
+    // keeps a hook from swallowing a runaway file.
+    const MAX_BYTES: usize = 32 * 1024 * 1024;
+    let mut read = 0usize;
+    loop {
+        line.clear();
+        let n = reader.read_line(&mut line).ok()?;
+        if n == 0 {
+            return None;
+        }
+        read += n;
+        if line.contains("\"model\"") {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+                if v.get("type").and_then(|t| t.as_str()) == Some("assistant") {
+                    if let Some(m) = v
+                        .get("message")
+                        .and_then(|m| m.get("model"))
+                        .and_then(|m| m.as_str())
+                        .filter(|m| !m.is_empty())
+                    {
+                        return Some(m.to_string());
+                    }
+                }
+            }
+        }
+        if read > MAX_BYTES {
+            return None;
+        }
+    }
 }
 
 /// The agent id a `PreToolUse` for `SendMessage` is addressed to.

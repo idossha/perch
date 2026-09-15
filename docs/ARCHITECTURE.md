@@ -187,11 +187,23 @@ kept verbatim). The mapping:
 | `SubagentStart` (`agent_id`, `agent_type`) | `SubagentStart` | upsert, `working`, records `agent_type` |
 | `PreToolUse` `SendMessage` with `tool_input.to` | `SubagentResume { id }` | upsert `id` `working`, `since` = now, keeps `agent_type` and message |
 | `PreToolUse`, any other tool | `ToolUse` | none |
+| `PreToolUse` / `PostToolUse` with `agent_id` | `ToolUse` | none, except the child's `model` when the hook has just learned it |
 | `SubagentStop`, id known | `SubagentStop` | that child → `done`, keeps its last message |
 | `SubagentStop`, id unknown, `agent_type` non-empty | `SubagentStop` | new child, `done` — a spawn whose start was missed |
 | `SubagentStop`, id unknown, `agent_type` `""` | `SubagentStop` | **none**: an internal helper, logged only |
 | `Stop` / `Notification` with `agent_id` | `Stop` / `NeedsInput` | that child |
 | `Stop` without `agent_id` | `Stop` | the pane's own state |
+
+**A subagent's model.** No Claude payload carries it. Each `Subagent` has a
+`model`, filled by the hook from the child's own transcript — Claude writes it
+as `<session>/subagents/agent-<id>.jsonl` beside the parent's
+`<session>.jsonl`, and every assistant line in it names `message.model`. The
+hook reads the file only while the child's model is unknown, stops at the
+first assistant line, and gives up after 32 MB (a fork's first line is the
+whole parent context). `SubagentStart` fires before the file exists, so the
+model lands on the child's first `PreToolUse` after its first answer, or on
+its `SubagentStop`. Codex and pi children take `model` from the payload when
+it is there, as the parent does.
 
 The last row of the child rules is load-bearing. Claude's internal helper
 agents produce a constant stream of unpaired stops with an empty `agent_type` —

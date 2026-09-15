@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Subagent rows show their own model.** An orchestrator on `opus 5` that
+  fans out to `sonnet 5` and `haiku 4.5` children now reads as exactly that:
+  each child row has the `model` column, under its parent's. Claude's hooks
+  never name a subagent's model, so perch reads it from the subagent's own
+  transcript on its first tool call after it has answered once; until then
+  the cell is blank. `perch list --json` children gain `model`. No setup
+  change is needed.
+
 ## [0.5.0] - 2026-09-07
 
 ### Added

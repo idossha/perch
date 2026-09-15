@@ -31,7 +31,7 @@ pub fn run(harness: Harness, ask: bool) -> anyhow::Result<()> {
     let raw: serde_json::Value = serde_json::from_str(buf.trim()).unwrap_or(json!({}));
     dump_payload(harness, &buf);
 
-    let Some(parsed) = adapters::parse(harness, &raw)? else {
+    let Some(mut parsed) = adapters::parse(harness, &raw)? else {
         return Ok(());
     };
     let is_question = matches!(parsed.event, Event::Question { .. });
@@ -90,6 +90,20 @@ pub fn run(harness: Harness, ask: bool) -> anyhow::Result<()> {
     if is_stop || rec.location.is_none() {
         if let Some(loc) = t.pane_location(&pane) {
             rec.location = Some(loc);
+        }
+    }
+    // Claude never names a subagent's model in a payload; its transcript
+    // does. Read it once per child, on the first event after it has spoken.
+    if harness == Harness::Claude && parsed.model.is_none() {
+        if let Some(id) = &parsed.agent_id {
+            let unknown = rec
+                .children
+                .iter()
+                .find(|c| &c.id == id)
+                .is_none_or(|c| c.model.is_none());
+            if unknown {
+                parsed.model = adapters::claude::subagent_model(&raw);
+            }
         }
     }
     let eff_before = rec.effective_state();

@@ -277,8 +277,18 @@ fn apply_child(rec: &mut PaneRecord, agent_id: &str, parsed: &ParsedEvent, now: 
         ),
         Event::NeedsInput { reason } => (State::NeedsInput, Some(one_line(reason)), None),
         Event::SessionEnd => (State::Ended, None, None),
-        // A subagent has no session of its own to start or prompt.
-        _ => return Applied::default(),
+        // A subagent has no session of its own to start or prompt, and its
+        // tool calls move nothing; but any of them may be the event that
+        // finally names the child's model.
+        _ => {
+            if let (Some(m), Some(child)) = (
+                &parsed.model,
+                rec.children.iter_mut().find(|c| c.id == agent_id),
+            ) {
+                child.model = Some(m.clone());
+            }
+            return Applied::default();
+        }
     };
 
     let sound =
@@ -299,6 +309,9 @@ fn apply_child(rec: &mut PaneRecord, agent_id: &str, parsed: &ParsedEvent, now: 
             if agent_type.is_some() {
                 child.agent_type = agent_type;
             }
+            if parsed.model.is_some() {
+                child.model = parsed.model.clone();
+            }
         }
         None => {
             rec.children.push(Subagent {
@@ -307,6 +320,7 @@ fn apply_child(rec: &mut PaneRecord, agent_id: &str, parsed: &ParsedEvent, now: 
                 state,
                 since: now.to_string(),
                 last_message: message,
+                model: parsed.model.clone(),
             });
             enforce_cap(rec);
         }

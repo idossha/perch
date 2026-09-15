@@ -180,6 +180,7 @@ fn reconcile_keeps_running_children_of_an_idle_or_done_pane() {
         state,
         since: (now - Duration::seconds(age_secs)).to_rfc3339(),
         last_message: None,
+        model: None,
     };
     let pane = |p: &str, state: State, children: Vec<Subagent>| {
         let mut r = PaneRecord::new(p, Harness::Claude, &now.to_rfc3339());

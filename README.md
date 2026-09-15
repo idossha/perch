@@ -157,7 +157,11 @@ variant such as `claude-opus-5[1m]` shows as plain `opus 5`. Claude reports
 its model on session start and on every `/model` switch, and its effort on
 every turn; Codex reports the model slug on every hook; pi's extension reports
 its model and thinking level. Nothing is ever read from a config file: a pane
-whose harness has said nothing shows nothing there.
+whose harness has said nothing shows nothing there. Subagent rows have the
+column too, so an orchestrator on `opus 5` fanning out to `sonnet 5` and
+`haiku 4.5` children reads as exactly that. Claude's hooks never name a
+subagent's model, so perch reads it from the subagent's own transcript on its
+first tool call after it has answered once; until then the cell is blank.
 Rows are grouped by project, the groups ordered by urgency, and each state has
 a glyph as well as a colour so the board reads without colour: `⚑` needs_input,
 `✓` done, `▶` working, `…` starting, `·` idle, `✕` ended. Ended panes are

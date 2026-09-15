@@ -685,3 +685,78 @@ fn with_no_focus_information_any_viewer_counts_as_seen() {
     hook("%999,%1:focused", &fixture("user_prompt_submit.json"));
     assert_eq!(hook("%999,%1:focused", &fixture("stop.json")), "done");
 }
+
+/// Claude's payloads never name a subagent's model, so perch reads it from
+/// the child's own transcript, `<session>/subagents/agent-<id>.jsonl` next
+/// to the parent's `<session>.jsonl`. Before the child has answered the cell
+/// is unknown; its first tool call after that fills it in.
+#[test]
+fn a_subagents_model_is_read_from_its_transcript() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path();
+    let parent = p.join("s-1.jsonl");
+    std::fs::write(&parent, "{}\n").unwrap();
+    let payload = |name: &str, extra: &str| {
+        format!(
+            "{{\"session_id\":\"s-1\",\"cwd\":\"/x\",\"transcript_path\":{},\"hook_event_name\":\"{name}\",\"agent_id\":\"sub-7\",\"agent_type\":\"Explore\"{extra}}}",
+            serde_json::to_string(&parent).unwrap()
+        )
+    };
+
+    assert!(
+        run(
+            p,
+            &["hook", "claude"],
+            Some(&fixture("user_prompt_submit.json"))
+        )
+        .2
+    );
+    assert!(run(p, &["hook", "claude"], Some(&payload("SubagentStart", ""))).2);
+    let (out, _, _) = run(p, &["list", "--json"], None);
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(v[0]["children"][0]["model"].is_null(), "{out}");
+
+    // The child answers once; Claude writes its transcript.
+    let sub = p.join("s-1").join("subagents");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(
+        sub.join("agent-sub-7.jsonl"),
+        concat!(
+            "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"look for the model\"}}\n",
+            "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-sonnet-5\",\"role\":\"assistant\",\"content\":[]}}\n",
+        ),
+    )
+    .unwrap();
+    assert!(
+        run(
+            p,
+            &["hook", "claude"],
+            Some(&payload(
+                "PreToolUse",
+                ",\"tool_name\":\"Read\",\"tool_input\":{}"
+            ))
+        )
+        .2
+    );
+    let (out, _, _) = run(p, &["list", "--json"], None);
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v[0]["children"][0]["model"], "claude-sonnet-5", "{out}");
+    // The parent's own model is untouched by its child's.
+    assert!(v[0]["model"].is_null(), "{out}");
+
+    assert!(
+        run(
+            p,
+            &["hook", "claude"],
+            Some(&payload(
+                "SubagentStop",
+                ",\"last_assistant_message\":\"done\""
+            ))
+        )
+        .2
+    );
+    let (out, _, _) = run(p, &["list", "--json"], None);
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v[0]["children"][0]["model"], "claude-sonnet-5", "{out}");
+    assert_eq!(v[0]["children"][0]["last_message"], "done", "{out}");
+}
