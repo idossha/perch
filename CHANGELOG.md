@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-15
+
 ### Added
 
 - **Subagent rows show their own model.** An orchestrator on `opus 5` that
@@ -315,6 +317,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Sound and desktop notifications are macOS-only.
 - Nothing is tracked outside tmux: with no `$TMUX_PANE`, the hook is a no-op.
 
-[Unreleased]: https://github.com/idossha/perch/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/idossha/perch/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/idossha/perch/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/idossha/perch/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/idossha/perch/compare/v0.3.0...v0.4.0
