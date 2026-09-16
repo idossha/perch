@@ -92,8 +92,7 @@ pub fn run(harness: Harness, ask: bool) -> anyhow::Result<()> {
             rec.location = Some(loc);
         }
     }
-    // Claude never names a subagent's model in a payload; its transcript
-    // does. Read it once per child, on the first event after it has spoken.
+    // A Claude subagent's model comes from its transcript, read once per child.
     if harness == Harness::Claude && parsed.model.is_none() {
         if let Some(id) = &parsed.agent_id {
             let unknown = rec

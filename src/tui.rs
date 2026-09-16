@@ -1159,8 +1159,8 @@ fn child_line(
     c: Cols,
 ) -> Line<'static> {
     let kid = &app.records[i].children[ci];
-    // The name spans the location, project and harness columns; the model
-    // sits in the model column, under the parent's.
+    // The name spans location, project and harness; the model sits under the
+    // parent's.
     let label_w = c.loc + c.project + c.harness;
     let msg_w = c.msg;
     let t = &app.theme;

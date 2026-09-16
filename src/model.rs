@@ -413,14 +413,13 @@ pub struct Subagent {
     pub since: String,
     #[serde(default)]
     pub last_message: Option<String>,
-    /// The model the subagent runs, when the harness said so on any of its
-    /// events. An orchestrator may hand each child a different model.
+    /// The model the subagent runs, when known.
     #[serde(default)]
     pub model: Option<String>,
 }
 
 impl Subagent {
-    /// The short model label for the child row, or empty when unknown.
+    /// The short model label, or empty when unknown.
     pub fn model_cell(&self) -> String {
         self.model.as_deref().map(model_label).unwrap_or_default()
     }

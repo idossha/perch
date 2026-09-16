@@ -277,9 +277,7 @@ fn apply_child(rec: &mut PaneRecord, agent_id: &str, parsed: &ParsedEvent, now: 
         ),
         Event::NeedsInput { reason } => (State::NeedsInput, Some(one_line(reason)), None),
         Event::SessionEnd => (State::Ended, None, None),
-        // A subagent has no session of its own to start or prompt, and its
-        // tool calls move nothing; but any of them may be the event that
-        // finally names the child's model.
+        // Nothing else moves a child, but any event may name its model.
         _ => {
             if let (Some(m), Some(child)) = (
                 &parsed.model,

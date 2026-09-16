@@ -86,9 +86,8 @@ pub fn parse(raw: &serde_json::Value) -> anyhow::Result<Option<ParsedEvent>> {
                 None => Event::ToolUse,
             },
         },
-        // A subagent's own tool call moves nothing, but it is the first
-        // moment its transcript exists: the hook uses it to learn the
-        // child's model while it is still running.
+        // A subagent's tool call moves nothing; the hook uses it to read the
+        // child's model from its transcript.
         "PreToolUse" | "PostToolUse" => Event::ToolUse,
         // The session's model changed: no state moves, but the record learns
         // the new model from `to_model`.
@@ -123,15 +122,9 @@ pub fn parse(raw: &serde_json::Value) -> anyhow::Result<Option<ParsedEvent>> {
     }))
 }
 
-/// The model a subagent runs, read from its own transcript.
-///
-/// No Claude hook payload names a subagent's model, but each of the
-/// subagent's assistant messages does, in the transcript Claude writes under
-/// the parent session's directory as `subagents/agent-<id>.jsonl`. The
-/// payload's `transcript_path` is the parent's `<session>.jsonl` or the
-/// subagent's own file; both are resolved. The scan stops at the first
-/// assistant line, so it costs one short read. `None` before the subagent
-/// has answered once, or when the file is elsewhere.
+/// The model a subagent runs, read from its transcript
+/// (`<session>/subagents/agent-<id>.jsonl`): no hook payload names it.
+/// `None` until the subagent has answered once.
 pub fn subagent_model(raw: &serde_json::Value) -> Option<String> {
     let agent_id = str_field(raw, "agent_id")?;
     let path = std::path::PathBuf::from(str_field(raw, "transcript_path")?);
@@ -155,8 +148,7 @@ pub fn model_in_transcript(path: &std::path::Path) -> Option<String> {
     let file = std::fs::File::open(path).ok()?;
     let mut reader = std::io::BufReader::new(file);
     let mut line = String::new();
-    // A fork's first user line carries the whole parent context; the cap
-    // keeps a hook from swallowing a runaway file.
+    // A fork's first line carries the whole parent context.
     const MAX_BYTES: usize = 32 * 1024 * 1024;
     let mut read = 0usize;
     loop {
